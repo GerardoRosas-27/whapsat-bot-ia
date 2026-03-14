@@ -96,21 +96,38 @@ export default function Dashboard() {
           <h1 style={{ fontSize: '24px', fontWeight: 'bold' }}>
             Sistema de Agendamiento - Dashboard
           </h1>
-          <button
-            onClick={handleLogout}
-            style={{
-              padding: '8px 20px',
-              background: 'rgba(255,255,255,0.2)',
-              border: '1px solid rgba(255,255,255,0.3)',
-              borderRadius: '6px',
-              color: 'white',
-              cursor: 'pointer',
-              fontSize: '14px',
-              fontWeight: '500'
-            }}
-          >
-            Cerrar Sesión
-          </button>
+          <div style={{ display: 'flex', gap: '10px', alignItems: 'center' }}>
+            <button
+              onClick={() => router.push('/dashboard/bot-config')}
+              style={{
+                padding: '8px 20px',
+                background: 'rgba(255,255,255,0.2)',
+                border: '1px solid rgba(255,255,255,0.3)',
+                borderRadius: '6px',
+                color: 'white',
+                cursor: 'pointer',
+                fontSize: '14px',
+                fontWeight: '500'
+              }}
+            >
+              ⚙️ Configurar Bot
+            </button>
+            <button
+              onClick={handleLogout}
+              style={{
+                padding: '8px 20px',
+                background: 'rgba(255,255,255,0.2)',
+                border: '1px solid rgba(255,255,255,0.3)',
+                borderRadius: '6px',
+                color: 'white',
+                cursor: 'pointer',
+                fontSize: '14px',
+                fontWeight: '500'
+              }}
+            >
+              Cerrar Sesión
+            </button>
+          </div>
         </div>
       </header>
 

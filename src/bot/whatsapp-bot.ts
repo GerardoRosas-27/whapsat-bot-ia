@@ -3,10 +3,12 @@ import qrcode from 'qrcode-terminal'
 import { prisma } from '../lib/prisma'
 import { format, parse, addDays, isBefore, isAfter, setHours, setMinutes } from 'date-fns'
 import { es } from 'date-fns/locale/es'
+import { PatternMatcher } from './pattern-matcher'
 
 class WhatsAppBot {
   private client: Client
   private isReady: boolean = false
+  private patternMatcher: PatternMatcher
 
   constructor() {
     this.client = new Client({
@@ -19,6 +21,7 @@ class WhatsAppBot {
       }
     })
 
+    this.patternMatcher = new PatternMatcher()
     this.setupEventHandlers()
   }
 
@@ -28,8 +31,10 @@ class WhatsAppBot {
       qrcode.generate(qr, { small: true })
     })
 
-    this.client.on('ready', () => {
+    this.client.on('ready', async () => {
       console.log('Bot de WhatsApp está listo!')
+      await this.patternMatcher.initialize()
+      console.log('Patrones y formatos cargados correctamente')
       this.isReady = true
     })
 
@@ -57,16 +62,26 @@ class WhatsAppBot {
     }
 
     try {
-      // Comandos del bot
-      if (body === 'hola' || body === 'hi' || body === 'inicio') {
-        await this.sendWelcomeMessage(message)
-      } else if (body.startsWith('agendar') || body.startsWith('cita')) {
+      // Verificar si es una solicitud de cita usando el pattern matcher
+      if (this.patternMatcher.isAppointmentRequest(message.body)) {
         await this.handleAppointmentRequest(message, phoneNumber)
-      } else if (body === 'mis citas' || body === 'citas') {
+        return
+      }
+
+      // Comandos del bot
+      const customResponse = await this.patternMatcher.getResponse(message.body)
+      if (customResponse) {
+        await message.reply(customResponse)
+        return
+      }
+
+      if (body === 'hola' || body === 'hi' || body === 'inicio' || body.includes('buenos días') || body.includes('buenas tardes') || body.includes('buenas noches')) {
+        await this.sendWelcomeMessage(message)
+      } else if (body === 'mis citas' || body === 'citas' || body.includes('mis citas')) {
         await this.sendUserAppointments(message, phoneNumber)
-      } else if (body === 'cancelar') {
+      } else if (body === 'cancelar' || body.includes('cancelar')) {
         await this.handleCancelAppointment(message, phoneNumber)
-      } else if (body === 'ayuda' || body === 'help') {
+      } else if (body === 'ayuda' || body === 'help' || body.includes('ayuda') || body.includes('comandos')) {
         await this.sendHelpMessage(message)
       } else {
         await this.sendDefaultResponse(message)
@@ -91,7 +106,20 @@ Escribe *ayuda* para ver todos los comandos disponibles.`
   }
 
   private async sendHelpMessage(message: Message) {
-    const helpText = `📚 *Comandos disponibles:*
+    // Cargar formatos desde la base de datos
+    const dateFormats = await prisma.dateFormat.findMany({
+      where: { isActive: true },
+      orderBy: { priority: 'desc' },
+      take: 5
+    })
+
+    const timeFormats = await prisma.timeFormat.findMany({
+      where: { isActive: true },
+      orderBy: { priority: 'desc' },
+      take: 5
+    })
+
+    let helpText = `📚 *Comandos disponibles:*
 
 • *hola* - Iniciar conversación
 • *agendar* o *cita* - Agendar una nueva cita
@@ -99,10 +127,25 @@ Escribe *ayuda* para ver todos los comandos disponibles.`
 • *cancelar* - Cancelar una cita
 • *ayuda* - Mostrar esta ayuda
 
-Para agendar una cita, escribe:
-*agendar* seguido de la fecha y hora deseada.
-Ejemplo: *agendar 15/01/2024 10:00*`
-    
+*Formatos de fecha aceptados:*
+`
+
+    dateFormats.forEach(df => {
+      helpText += `• ${df.example}\n`
+    })
+
+    helpText += `\n*Formatos de hora aceptados:*\n`
+
+    timeFormats.forEach(tf => {
+      helpText += `• ${tf.example}\n`
+    })
+
+    helpText += `\n*Ejemplos de solicitud:*
+• agendar 15/01/2024 10:00
+• quiero una cita mañana a las 2 pm
+• reservar cita para el lunes a las 10 horas
+• necesito una consulta el 20-01-2024 a las 15:30`
+
     await message.reply(helpText)
   }
 
@@ -115,30 +158,29 @@ Ejemplo: *agendar 15/01/2024 10:00*`
   private async handleAppointmentRequest(message: Message, phoneNumber: string) {
     const body = message.body.trim()
     
-    // Intentar extraer fecha y hora del mensaje
-    const dateMatch = body.match(/(\d{1,2})\/(\d{1,2})\/(\d{4})/)
-    const timeMatch = body.match(/(\d{1,2}):(\d{2})/)
+    // Usar el pattern matcher para extraer fecha y hora
+    const parsedDate = this.patternMatcher.parseDate(body)
+    const parsedTime = this.patternMatcher.parseTime(body)
     
-    if (!dateMatch) {
+    if (!parsedDate) {
+      const errorResponse = await this.patternMatcher.getResponse('error.*fecha')
       await message.reply(
-        'Por favor, proporciona la fecha en formato DD/MM/YYYY.\n' +
-        'Ejemplo: *agendar 15/01/2024 10:00*\n\n' +
-        'O responde con solo la fecha y hora que deseas.'
+        errorResponse || 
+        '❌ No pude entender la fecha. Por favor, proporciona la fecha en uno de estos formatos:\n' +
+        '• 15/01/2024\n' +
+        '• 15-01-2024\n' +
+        '• 15 de enero de 2024\n' +
+        '• mañana\n' +
+        '• lunes\n\n' +
+        'Ejemplo: *agendar 15/01/2024 10:00*'
       )
       return
     }
 
-    const [, day, month, year] = dateMatch
-    let appointmentDate: Date
-    let appointmentTime: string = '10:00'
+    let appointmentDate: Date = parsedDate.date
+    let appointmentTime: string = parsedTime?.time || '10:00'
 
     try {
-      appointmentDate = parse(`${day}/${month}/${year}`, 'dd/MM/yyyy', new Date())
-      
-      if (timeMatch) {
-        const [, hours, minutes] = timeMatch
-        appointmentTime = `${hours.padStart(2, '0')}:${minutes.padStart(2, '0')}`
-      }
 
       // Validar que la fecha no sea en el pasado
       const now = new Date()
@@ -203,7 +245,14 @@ Ejemplo: *agendar 15/01/2024 10:00*`
 
     } catch (error) {
       console.error('Error agendando cita:', error)
-      await message.reply('❌ Error al procesar tu solicitud. Por favor, verifica el formato de la fecha (DD/MM/YYYY) y vuelve a intentar.')
+      const errorResponse = await this.patternMatcher.getResponse('error.*fecha')
+      await message.reply(
+        errorResponse || 
+        '❌ Error al procesar tu solicitud. Por favor, verifica el formato y vuelve a intentar.\n\n' +
+        'Formatos aceptados:\n' +
+        '• Fecha: 15/01/2024, 15-01-2024, 15 de enero de 2024, mañana, lunes\n' +
+        '• Hora: 10:00, 10:00 am, 10 horas'
+      )
     }
   }
 
@@ -302,6 +351,11 @@ Ejemplo: *agendar 15/01/2024 10:00*`
 
   public isBotReady() {
     return this.isReady
+  }
+
+  public async reloadPatterns() {
+    await this.patternMatcher.initialize()
+    console.log('Patrones recargados correctamente')
   }
 }
 

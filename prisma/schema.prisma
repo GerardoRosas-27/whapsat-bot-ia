@@ -38,3 +38,46 @@ model BotSession {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 }
+
+model AppointmentPattern {
+  id          String   @id @default(cuid())
+  pattern     String   // Patrón regex o texto a buscar
+  description String   // Descripción del patrón
+  priority    Int      @default(0) // Prioridad (mayor = más importante)
+  isActive    Boolean  @default(true)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+}
+
+model DateFormat {
+  id          String   @id @default(cuid())
+  format      String   // Formato de fecha (ej: "dd/MM/yyyy", "yyyy-MM-dd")
+  pattern     String   // Patrón regex para reconocer el formato
+  example     String   // Ejemplo de uso
+  isActive    Boolean  @default(true)
+  priority    Int      @default(0)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+}
+
+model TimeFormat {
+  id          String   @id @default(cuid())
+  format      String   // Formato de hora (ej: "HH:mm", "h:mm a")
+  pattern     String   // Patrón regex para reconocer el formato
+  example     String   // Ejemplo de uso
+  isActive    Boolean  @default(true)
+  priority    Int      @default(0)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+}
+
+model BotResponse {
+  id          String   @id @default(cuid())
+  trigger     String   // Palabra clave o patrón que activa esta respuesta
+  response    String   // Texto de respuesta
+  responseType String  @default("text") // text, help, error, success
+  isActive    Boolean  @default(true)
+  priority    Int      @default(0)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+}

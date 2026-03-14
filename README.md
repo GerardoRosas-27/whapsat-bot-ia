@@ -68,12 +68,48 @@ npm run bot
 
 Los usuarios pueden interactuar con el bot usando estos comandos:
 
-- `hola` o `inicio` - Iniciar conversación
-- `agendar` o `cita` - Agendar una nueva cita
-  - Ejemplo: `agendar 15/01/2024 10:00`
+- `hola`, `hi`, `buenos días`, `buenas tardes` - Iniciar conversación
+- `agendar`, `cita`, `reservar`, `solicitar cita` - Agendar una nueva cita
 - `mis citas` o `citas` - Ver citas programadas
 - `cancelar` - Cancelar una cita
 - `ayuda` o `help` - Mostrar ayuda
+
+### Formatos de Fecha Aceptados
+
+El bot reconoce múltiples formatos de fecha:
+
+- **DD/MM/YYYY**: `15/01/2024`
+- **DD-MM-YYYY**: `15-01-2024`
+- **YYYY-MM-DD**: `2024-01-15`
+- **DD/MM/YY**: `15/01/24`
+- **DD.MM.YYYY**: `15.01.2024`
+- **Texto**: `15 de enero de 2024`, `15 enero 2024`
+- **Referencias temporales**: `mañana`, `pasado mañana`
+- **Días de la semana**: `lunes`, `martes`, `miércoles`, etc.
+
+### Formatos de Hora Aceptados
+
+El bot reconoce múltiples formatos de hora:
+
+- **HH:MM**: `10:00`, `14:30`
+- **HHMM**: `1000`, `1430`
+- **12 horas**: `10:00 am`, `2:00 pm`, `10 am`
+- **Texto**: `10 horas`, `14 horas`
+
+### Ejemplos de Solicitudes
+
+Los usuarios pueden agendar citas de múltiples formas:
+
+```
+- agendar 15/01/2024 10:00
+- quiero una cita mañana a las 2 pm
+- reservar cita para el lunes a las 10 horas
+- necesito una consulta el 20-01-2024 a las 15:30
+- solicitar cita el 15 de enero de 2024 a las 10:00 am
+- pedir cita para mañana
+```
+
+El sistema reconoce automáticamente el formato y lo convierte al formato interno de la base de datos.
 
 ## Panel de Administración
 
@@ -103,17 +139,30 @@ whapsat-agente/
 │   │   ├── api/              # API Routes
 │   │   │   ├── auth/         # Autenticación
 │   │   │   ├── appointments/ # Gestión de citas
-│   │   │   └── bot/          # Estado del bot
+│   │   │   └── bot/          # Estado y patrones del bot
 │   │   ├── dashboard/        # Panel de administración
 │   │   └── page.tsx          # Página de login
 │   ├── bot/
-│   │   └── whatsapp-bot.ts   # Bot de WhatsApp
+│   │   ├── whatsapp-bot.ts   # Bot de WhatsApp
+│   │   └── pattern-matcher.ts # Reconocimiento de patrones
 │   ├── components/           # Componentes React
 │   └── lib/                  # Utilidades
 ├── scripts/
-│   └── init-db.ts            # Script de inicialización
+│   ├── init-db.ts            # Script de inicialización
+│   └── init-bot-patterns.ts  # Inicialización de patrones
 └── package.json
 ```
+
+## Configuración del Bot
+
+El bot utiliza un sistema de patrones configurable almacenado en la base de datos:
+
+- **AppointmentPattern**: Patrones para reconocer solicitudes de citas
+- **DateFormat**: Formatos de fecha aceptados
+- **TimeFormat**: Formatos de hora aceptados
+- **BotResponse**: Respuestas personalizables del bot
+
+Puedes modificar estos patrones desde el panel de administración o directamente en la base de datos para personalizar el comportamiento del bot.
 
 ## Tecnologías Utilizadas
 

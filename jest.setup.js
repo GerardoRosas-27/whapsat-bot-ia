@@ -31,11 +31,19 @@ global.localStorage = localStorageMock
 // Mock fetch
 global.fetch = jest.fn()
 
+// Note: NextRequest is used as-is from next/server
+// Tests should use request.nextUrl instead of new URL(request.url)
+
 // Polyfill for Request/Response (needed for Next.js API routes)
 if (typeof Request === 'undefined') {
   global.Request = class Request {
     constructor(input, init = {}) {
-      this.url = typeof input === 'string' ? input : input.url
+      const url = typeof input === 'string' ? input : input?.url || 'http://localhost:3000'
+      Object.defineProperty(this, 'url', {
+        get: () => url,
+        enumerable: true,
+        configurable: false
+      })
       this.method = init.method || 'GET'
       this.headers = new Headers(init.headers || {})
       this.body = init.body || null
