@@ -80,8 +80,8 @@ async function main() {
 
   // Respuestas del bot
   const botResponses = [
-    // Saludos
-    { trigger: 'hola|hi|buenos días|buenas tardes|buenas noches|buen día', response: '👋 ¡Hola! Soy tu asistente para agendar citas de psicología.\n\n¿En qué puedo ayudarte?\n📅 Agendar cita\n📋 Ver mis citas\n❌ Cancelar cita\n🔄 Reagendar cita\n\nEscribe *ayuda* para más opciones.', responseType: 'text', priority: 10, isActive: true },
+    // Saludos (desactivado - el bot maneja esto directamente con números)
+    // { trigger: 'hola|hi|buenos días|buenas tardes|buenas noches|buen día', response: '👋 ¡Hola! Soy tu asistente para agendar citas de psicología.\n\n¿En qué puedo ayudarte?\n📅 Agendar cita\n📋 Ver mis citas\n❌ Cancelar cita\n🔄 Reagendar cita\n\nEscribe *ayuda* para más opciones.', responseType: 'text', priority: 10, isActive: false },
     
     // Ayuda
     { trigger: 'ayuda|help|comandos|opciones|qué puedo hacer', response: '📚 *Comandos disponibles:*\n\n• *agendar* - Nueva cita\n• *mis citas* - Ver citas\n• *cancelar* - Cancelar cita\n• *reagendar* - Cambiar fecha/hora\n• *confirmar* - Confirmar asistencia\n\n*Ejemplos:*\n• "Quiero agendar cita el 15/01/2024 a las 10:00"\n• "Cancelar mi cita"\n• "Reagendar para mañana a las 2pm"', responseType: 'help', priority: 10, isActive: true },
