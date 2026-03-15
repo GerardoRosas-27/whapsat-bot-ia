@@ -4,10 +4,12 @@ import { prisma } from '../lib/prisma'
 import { format, parse, addDays, isBefore, isAfter, setHours, setMinutes } from 'date-fns'
 import { es } from 'date-fns/locale/es'
 import { PatternMatcher } from './pattern-matcher'
+import { checkDayAvailability, isTimeSlotAvailable, findNextAvailableSlots, getBusinessHours } from '../lib/availability'
 
 type BotState = 
   | 'idle'                    // Estado inicial, esperando acción del usuario
   | 'waiting_for_date_time'   // Esperando fecha y hora para agendar
+  | 'selecting_available_slot' // Esperando que el usuario elija entre opciones de citas disponibles
   | 'canceling_appointment'   // Esperando número de cita a cancelar
   | 'reagending_appointment'  // Esperando número de cita a reagendar
   | 'reagending_new_date'     // Esperando nueva fecha/hora para reagendar
@@ -143,13 +145,19 @@ class WhatsAppBot {
   }
 
   private async handleMessage(message: Message) {
+    // Ignorar mensajes propios (eco del bot)
+    if (message.fromMe) {
+      console.log(`[DEBUG] Ignorando mensaje propio: "${message.body}"`)
+      return
+    }
+
     const contact = await message.getContact()
     const phoneNumber = contact.number
     const body = message.body.trim()
     const lowerBody = body.toLowerCase()
 
     // Ignorar mensajes de grupos y estados
-    if (message.from === 'status@broadcast' || (message as any).isGroupMsg) {
+    if (message.from === 'status@broadcast' || message.from.endsWith('@g.us')) {
       return
     }
 
@@ -167,6 +175,27 @@ class WhatsAppBot {
         case 'reagending_new_date':
           // El usuario está proporcionando nueva fecha/hora para reagendar
           await this.handleReagendarNewDateInput(message, phoneNumber, body, session)
+          return
+
+        case 'selecting_available_slot':
+          // El usuario está eligiendo entre opciones de citas disponibles
+          const slotNumber = this.parseNumberSelection(body)
+          console.log(`[DEBUG] selecting_available_slot - Número parseado: ${slotNumber}, Mensaje: "${body}"`)
+          if (slotNumber !== null) {
+            console.log(`[DEBUG] Procesando selección de slot número ${slotNumber}`)
+            await this.handleAvailableSlotSelection(message, phoneNumber, slotNumber, session)
+            return
+          }
+          // Si no es un número, verificar si quiere volver al menú principal
+          if (lowerBody === 'hola' || lowerBody === 'hi' || lowerBody === 'inicio' || lowerBody.includes('buenos días') || lowerBody.includes('buenas tardes') || lowerBody.includes('buenas noches')) {
+            await this.clearSession(phoneNumber)
+            await this.sendWelcomeMessage(message, phoneNumber)
+            return
+          }
+          // Si no es un número ni "hola", pedir que elija una opción numérica
+          await message.reply(
+            '❌ Por favor, responde con el *número* de la opción que prefieres (1, 2, 3, etc.), o escribe *hola* para volver al menú principal.'
+          )
           return
 
         case 'canceling_appointment':
@@ -380,6 +409,87 @@ class WhatsAppBot {
     }
   }
 
+  private async handleAvailableSlotSelection(message: Message, phoneNumber: string, number: number, session: UserSession) {
+    const suggestedSlotsRaw = session.context?.suggestedSlots as Array<{ date: Date | string, time: string }>
+    
+    if (!suggestedSlotsRaw || suggestedSlotsRaw.length === 0) {
+      await message.reply('❌ Error: No se encontraron opciones disponibles. Por favor, intenta de nuevo.')
+      await this.clearSession(phoneNumber)
+      await this.sendWelcomeMessage(message, phoneNumber)
+      return
+    }
+    
+    // Asegurarse de que las fechas sean objetos Date
+    const suggestedSlots = suggestedSlotsRaw.map(slot => ({
+      date: slot.date instanceof Date ? slot.date : new Date(slot.date),
+      time: slot.time
+    }))
+    
+    const totalOptions = suggestedSlots.length + 1 // +1 para la opción de fecha personalizada
+    
+    if (number > 0 && number <= suggestedSlots.length) {
+      // El usuario seleccionó una de las opciones de horarios disponibles
+      const selectedSlot = suggestedSlots[number - 1]
+      
+      // Validar que la fecha sea válida
+      if (isNaN(selectedSlot.date.getTime())) {
+        await message.reply('❌ Error: La fecha seleccionada no es válida. Por favor, intenta de nuevo.')
+        await this.clearSession(phoneNumber)
+        await this.sendWelcomeMessage(message, phoneNumber)
+        return
+      }
+      
+      // Verificar disponibilidad una vez más antes de agendar
+      const isAvailable = await isTimeSlotAvailable(selectedSlot.date, selectedSlot.time)
+      if (!isAvailable) {
+        await message.reply('❌ Lo siento, ese horario ya no está disponible. Por favor, elige otra opción o escribe una nueva fecha y hora.')
+        return
+      }
+      
+      // Crear la cita con el slot seleccionado
+      const contact = await message.getContact()
+      const patientName = contact.pushname || contact.number || 'Paciente'
+      
+      const appointment = await prisma.appointment.create({
+        data: {
+          patientName,
+          phoneNumber,
+          date: selectedSlot.date,
+          time: selectedSlot.time,
+          status: 'pending'
+        }
+      })
+      
+      const formattedDate = format(selectedSlot.date, "EEEE, d 'de' MMMM 'de' yyyy", { locale: es })
+      
+      await message.reply(
+        `✅ *Cita agendada exitosamente*\n\n` +
+        `📅 Fecha: ${formattedDate}\n` +
+        `🕐 Hora: ${selectedSlot.time}\n` +
+        `👤 Paciente: ${patientName}\n\n` +
+        `Tu cita está pendiente de confirmación. Te notificaremos cuando sea confirmada.\n\n` +
+        `ID de cita: ${appointment.id.substring(0, 8)}`
+      )
+      
+      await this.clearSession(phoneNumber)
+      await this.sendWelcomeMessage(message, phoneNumber)
+    } else if (number === totalOptions) {
+      // El usuario seleccionó la opción de escribir fecha personalizada
+      await this.updateSessionState(phoneNumber, 'waiting_for_date_time', { waitingForDate: true })
+      await message.reply(
+        `📅 *Escribir fecha y hora personalizada*\n\n` +
+        `Por favor, proporciona la fecha y hora que deseas.\n\n` +
+        `*Ejemplos:*\n` +
+        `• 15/01/2024 10:00\n` +
+        `• Mañana a las 2pm\n` +
+        `• Lunes a las 10 horas\n` +
+        `• 20-01-2024 15:30`
+      )
+    } else {
+      await message.reply(`❌ Número inválido. Por favor, elige un número entre 1 y ${totalOptions}.`)
+    }
+  }
+
   private async handleReagendarNewDateInput(message: Message, phoneNumber: string, body: string, session: UserSession) {
     const selectedAppointment = session.context?.selectedAppointment
     if (!selectedAppointment) {
@@ -559,32 +669,161 @@ class WhatsAppBot {
         return
       }
 
-      // Validar horario (ejemplo: 9:00 - 18:00)
+      // Obtener horarios de atención configurados
+      const businessHours = await getBusinessHours()
       const [hours, minutes] = appointmentTime.split(':').map(Number)
-      const appointmentDateTime = setMinutes(setHours(appointmentDate, hours), minutes)
+      const [startHour, startMin] = businessHours.startTime.split(':').map(Number)
+      const [endHour, endMin] = businessHours.endTime.split(':').map(Number)
       
-      if (hours < 9 || hours > 18) {
-        await message.reply('❌ El horario de atención es de 9:00 a 18:00 horas.')
+      // Validar que esté dentro del horario de atención
+      const timeMinutes = hours * 60 + minutes
+      const startMinutes = startHour * 60 + startMin
+      const endMinutes = endHour * 60 + endMin
+      
+      if (timeMinutes < startMinutes || timeMinutes >= endMinutes) {
+        await message.reply(`❌ El horario de atención es de ${businessHours.startTime} a ${businessHours.endTime} horas.`)
         return
       }
 
-      // Verificar disponibilidad
-      const existingAppointment = await prisma.appointment.findFirst({
-        where: {
-          date: appointmentDate,
-          time: appointmentTime,
-          status: {
-            in: ['pending', 'confirmed']
+      // Verificar disponibilidad del día
+      const availability = await checkDayAvailability(appointmentDate, appointmentTime)
+      
+      // Si el día está completamente lleno o es día no laborable
+      if (availability.isFull) {
+        // Verificar si es día no laborable
+        const businessHours = await getBusinessHours()
+        const dateStr = format(appointmentDate, 'yyyy-MM-dd')
+        const isNonWorking = businessHours.nonWorkingDays.some(nwd => {
+          const nwdStr = format(new Date(nwd.date), 'yyyy-MM-dd')
+          return nwdStr === dateStr
+        })
+        
+        if (isNonWorking) {
+          // Buscar próximas citas disponibles en días laborables
+          const nextSlots = await findNextAvailableSlots(appointmentDate, appointmentTime, 14)
+          
+          if (nextSlots.length > 0) {
+            const session = await this.getSession(phoneNumber)
+            // Serializar fechas como ISO strings para guardar en contexto
+            const suggestedSlots = nextSlots.map(slot => ({
+              date: slot.date.toISOString(),
+              time: slot.time
+            }))
+            
+            await this.updateSessionState(phoneNumber, 'selecting_available_slot', { 
+              suggestedSlots: suggestedSlots,
+              originalDate: appointmentDate.toISOString(),
+              originalTime: appointmentTime
+            })
+            
+            console.log(`[DEBUG] Estado actualizado a selecting_available_slot con ${suggestedSlots.length} opciones`)
+            
+            let response = `❌ Lo siento, ese día no es laborable.\n\n`
+            response += `📅 *Citas disponibles más cercanas:*\n\n`
+            
+            nextSlots.forEach((slot, index) => {
+              const formattedDate = format(slot.date, "EEEE, d 'de' MMMM 'de' yyyy", { locale: es })
+              response += `${index + 1}️⃣ ${formattedDate} a las ${slot.time}\n`
+            })
+            
+            // Agregar tercera opción para fecha personalizada
+            response += `${nextSlots.length + 1}️⃣ Escribir otra fecha y hora\n\n`
+            response += `*Responde con el número* de la opción que prefieres (ej: *1*).`
+            
+            await message.reply(response)
+            return
+          } else {
+            await message.reply(
+              `❌ Lo siento, ese día no es laborable y no hay citas disponibles en los próximos días.\n` +
+              `Por favor, intenta con otra fecha.`
+            )
+            return
+          }
+        } else {
+          // El día está lleno (no es día no laborable, solo está ocupado)
+          const nextSlots = await findNextAvailableSlots(appointmentDate, appointmentTime, 7)
+          
+          if (nextSlots.length > 0) {
+            const session = await this.getSession(phoneNumber)
+            // Serializar fechas como ISO strings para guardar en contexto
+            const suggestedSlots = nextSlots.map(slot => ({
+              date: slot.date.toISOString(),
+              time: slot.time
+            }))
+            
+            await this.updateSessionState(phoneNumber, 'selecting_available_slot', { 
+              suggestedSlots: suggestedSlots,
+              originalDate: appointmentDate.toISOString(),
+              originalTime: appointmentTime
+            })
+            
+            console.log(`[DEBUG] Estado actualizado a selecting_available_slot con ${suggestedSlots.length} opciones`)
+            
+            let response = `❌ Lo siento, ese día ya está completamente lleno.\n\n`
+            response += `📅 *Citas disponibles más cercanas:*\n\n`
+            
+            nextSlots.forEach((slot, index) => {
+              const formattedDate = format(slot.date, "EEEE, d 'de' MMMM 'de' yyyy", { locale: es })
+              response += `${index + 1}️⃣ ${formattedDate} a las ${slot.time}\n`
+            })
+            
+            // Agregar tercera opción para fecha personalizada
+            response += `${nextSlots.length + 1}️⃣ Escribir otra fecha y hora\n\n`
+            response += `*Responde con el número* de la opción que prefieres (ej: *1*).`
+            
+            await message.reply(response)
+            return
+          } else {
+            await message.reply(
+              `❌ Lo siento, ese día ya está completamente lleno y no hay citas disponibles en los próximos días.\n` +
+              `Por favor, intenta con otra fecha.`
+            )
+            return
           }
         }
-      })
-
-      if (existingAppointment) {
-        await message.reply(
-          `❌ Lo siento, ese horario ya está ocupado.\n` +
-          `Por favor, elige otro horario disponible.`
-        )
-        return
+      }
+      
+      // Verificar si el horario específico está disponible
+      const isAvailable = await isTimeSlotAvailable(appointmentDate, appointmentTime)
+      
+      if (!isAvailable) {
+        // El horario específico está ocupado, pero hay otros disponibles
+        if (availability.suggestedSlots.length > 0) {
+          const session = await this.getSession(phoneNumber)
+          // Serializar fechas como ISO strings para guardar en contexto
+          const suggestedSlots = availability.suggestedSlots.map(slot => ({
+            date: appointmentDate.toISOString(),
+            time: slot.time
+          }))
+          
+          await this.updateSessionState(phoneNumber, 'selecting_available_slot', { 
+            suggestedSlots: suggestedSlots,
+            originalDate: appointmentDate.toISOString(),
+            originalTime: appointmentTime
+          })
+          
+          console.log(`[DEBUG] Estado actualizado a selecting_available_slot con ${suggestedSlots.length} opciones (mismo día)`)
+          
+          let response = `❌ Lo siento, ese horario ya está ocupado.\n\n`
+          response += `📅 *Horarios disponibles ese mismo día:*\n\n`
+          
+          availability.suggestedSlots.forEach((slot, index) => {
+            response += `${index + 1}️⃣ ${slot.time}\n`
+          })
+          
+          // Agregar tercera opción para fecha personalizada
+          response += `${availability.suggestedSlots.length + 1}️⃣ Escribir otra fecha y hora\n\n`
+          response += `*Responde con el número* de la opción que prefieres (ej: *1*).`
+          
+          await message.reply(response)
+          return
+        } else {
+          await message.reply(
+            `❌ Lo siento, ese horario ya está ocupado.\n` +
+            `Por favor, elige otro horario disponible.`
+          )
+          return
+        }
       }
 
       // Obtener nombre del contacto
@@ -827,32 +1066,66 @@ class WhatsAppBot {
         return
       }
 
-      // Validar horario (ejemplo: 9:00 - 18:00)
+      // Obtener horarios de atención configurados
+      const businessHours = await getBusinessHours()
       const [hours, minutes] = newTime.split(':').map(Number)
-      const appointmentDateTime = setMinutes(setHours(newDate, hours), minutes)
+      const [startHour, startMin] = businessHours.startTime.split(':').map(Number)
+      const [endHour, endMin] = businessHours.endTime.split(':').map(Number)
       
-      if (hours < 9 || hours > 18) {
-        await message.reply('❌ El horario de atención es de 9:00 a 18:00 horas.')
+      // Validar que esté dentro del horario de atención
+      const timeMinutes = hours * 60 + minutes
+      const startMinutes = startHour * 60 + startMin
+      const endMinutes = endHour * 60 + endMin
+      
+      if (timeMinutes < startMinutes || timeMinutes >= endMinutes) {
+        await message.reply(`❌ El horario de atención es de ${businessHours.startTime} a ${businessHours.endTime} horas.`)
         return
       }
 
       // Verificar disponibilidad (excluyendo la cita actual)
-      const existingAppointment = await prisma.appointment.findFirst({
-        where: {
-          date: newDate,
-          time: newTime,
-          status: {
-            in: ['pending', 'confirmed']
-          },
-          id: {
-            not: oldAppointment.id
-          }
+      const isAvailable = await isTimeSlotAvailable(newDate, newTime)
+      
+      if (!isAvailable) {
+        // Verificar si es día no laborable
+        const dateStr = format(newDate, 'yyyy-MM-dd')
+        const isNonWorking = businessHours.nonWorkingDays.some(nwd => {
+          const nwdStr = format(new Date(nwd.date), 'yyyy-MM-dd')
+          return nwdStr === dateStr
+        })
+        
+        if (isNonWorking) {
+          await message.reply(
+            `❌ Lo siento, ese día no es laborable.\n` +
+            `Por favor, elige otro día disponible.`
+          )
+          return
         }
-      })
-
-      if (existingAppointment) {
+        
+        // Verificar si el horario está ocupado
+        const existingAppointment = await prisma.appointment.findFirst({
+          where: {
+            date: newDate,
+            time: newTime,
+            status: {
+              in: ['pending', 'confirmed']
+            },
+            id: {
+              not: oldAppointment.id
+            }
+          }
+        })
+        
+        if (existingAppointment) {
+          await message.reply(
+            `❌ Lo siento, ese horario ya está ocupado.\n` +
+            `Por favor, elige otro horario disponible.`
+          )
+          return
+        }
+        
+        // Si no está ocupado pero no está disponible, puede ser por periodo de descanso
         await message.reply(
-          `❌ Lo siento, ese horario ya está ocupado.\n` +
+          `❌ Lo siento, ese horario no está disponible (puede estar en un periodo de descanso).\n` +
           `Por favor, elige otro horario disponible.`
         )
         return

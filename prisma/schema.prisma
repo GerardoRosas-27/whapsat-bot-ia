@@ -81,3 +81,38 @@ model BotResponse {
   createdAt   DateTime @default(now())
   updatedAt   DateTime @updatedAt
 }
+
+model BusinessHours {
+  id                String   @id @default(cuid())
+  startTime         String   @default("08:00") // Hora de inicio (formato HH:mm)
+  endTime           String   @default("18:00") // Hora de fin (formato HH:mm)
+  appointmentDuration Int    @default(60) // Duración de cada cita en minutos
+  isActive          Boolean  @default(true)
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+  restPeriods       RestPeriod[] // Periodos de descanso
+  nonWorkingDays    NonWorkingDay[] // Días no laborables
+}
+
+model RestPeriod {
+  id            String   @id @default(cuid())
+  businessHoursId String
+  businessHours BusinessHours @relation(fields: [businessHoursId], references: [id], onDelete: Cascade)
+  startTime     String   // Hora de inicio del descanso (formato HH:mm)
+  endTime       String   // Hora de fin del descanso (formato HH:mm)
+  description   String?  // Descripción opcional del periodo
+  isActive      Boolean  @default(true)
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+}
+
+model NonWorkingDay {
+  id            String   @id @default(cuid())
+  businessHoursId String
+  businessHours BusinessHours @relation(fields: [businessHoursId], references: [id], onDelete: Cascade)
+  date          DateTime // Fecha no laborable
+  description   String?  // Descripción opcional (ej: "Día festivo", "Vacaciones")
+  isActive      Boolean  @default(true)
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+}
