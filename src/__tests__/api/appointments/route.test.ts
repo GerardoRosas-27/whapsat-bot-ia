@@ -10,6 +10,9 @@ jest.mock('@/lib/prisma', () => ({
       findMany: jest.fn(),
       count: jest.fn(),
       create: jest.fn(),
+      findUnique: jest.fn(),
+      update: jest.fn(),
+      delete: jest.fn(),
     },
   },
 }))
@@ -125,13 +128,22 @@ describe('POST /api/appointments', () => {
 
     mockedVerifyToken.mockReturnValue(mockUser)
 
+    // Create a mock request with body
+    const requestBody = JSON.stringify({
+      patientName: 'John Doe',
+      // Missing phoneNumber, date, time
+    })
+    
     const request = new NextRequest('http://localhost:3000/api/appointments', {
       method: 'POST',
-      body: JSON.stringify({
-        patientName: 'John Doe',
-        // Missing phoneNumber, date, time
-      }),
+      body: requestBody,
+      headers: {
+        'Content-Type': 'application/json',
+      },
     })
+
+    // Mock the json method
+    request.json = jest.fn().mockResolvedValue(JSON.parse(requestBody))
 
     const response = await POST(request)
     const data = await response.json()
@@ -162,15 +174,23 @@ describe('POST /api/appointments', () => {
     mockedVerifyToken.mockReturnValue(mockUser)
     mockedPrisma.appointment.create.mockResolvedValue(mockAppointment as any)
 
+    const requestBody = JSON.stringify({
+      patientName: 'John Doe',
+      phoneNumber: '+1234567890',
+      date: '2024-01-15',
+      time: '10:00',
+    })
+
     const request = new NextRequest('http://localhost:3000/api/appointments', {
       method: 'POST',
-      body: JSON.stringify({
-        patientName: 'John Doe',
-        phoneNumber: '+1234567890',
-        date: '2024-01-15',
-        time: '10:00',
-      }),
+      body: requestBody,
+      headers: {
+        'Content-Type': 'application/json',
+      },
     })
+
+    // Mock the json method
+    request.json = jest.fn().mockResolvedValue(JSON.parse(requestBody))
 
     const response = await POST(request)
     const data = await response.json()

@@ -39,3 +39,7 @@ next-env.d.ts
 # WhatsApp session
 /.wwebjs_auth/
 /.wwebjs_cache/
+
+# Logs
+/logs/
+*.log

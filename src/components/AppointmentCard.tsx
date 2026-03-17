@@ -46,6 +46,11 @@ export default function AppointmentCard({ appointment, onUpdate, onDelete }: App
   const handleUpdate = async () => {
     try {
       const token = localStorage.getItem('token')
+      if (!token) {
+        alert('No estás autenticado. Por favor, inicia sesión nuevamente.')
+        return
+      }
+
       const response = await fetch(`/api/appointments/${appointment.id}`, {
         method: 'PATCH',
         headers: {
@@ -58,15 +63,19 @@ export default function AppointmentCard({ appointment, onUpdate, onDelete }: App
         })
       })
 
+      const data = await response.json()
+
       if (response.ok) {
         setIsEditing(false)
         onUpdate()
       } else {
-        alert('Error al actualizar la cita')
+        const errorMessage = data.error || 'Error al actualizar la cita'
+        alert(`Error: ${errorMessage}`)
+        console.error('Error al actualizar cita:', data)
       }
     } catch (error) {
       console.error('Error actualizando cita:', error)
-      alert('Error al actualizar la cita')
+      alert('Error de conexión. Por favor, verifica tu conexión a internet e intenta de nuevo.')
     }
   }
 
@@ -77,21 +86,58 @@ export default function AppointmentCard({ appointment, onUpdate, onDelete }: App
 
     try {
       const token = localStorage.getItem('token')
+      if (!token) {
+        alert('No estás autenticado. Por favor, inicia sesión nuevamente.')
+        return
+      }
+
+      console.log('[DELETE] Intentando eliminar cita con ID:', appointment.id)
+      console.log('[DELETE] URL:', `/api/appointments/${appointment.id}`)
+      
       const response = await fetch(`/api/appointments/${appointment.id}`, {
         method: 'DELETE',
         headers: {
-          'Authorization': `Bearer ${token}`
+          'Authorization': `Bearer ${token}`,
+          'Content-Type': 'application/json'
         }
       })
+      
+      console.log('[DELETE] Respuesta recibida:', response.status, response.statusText)
+
+      // Verificar si la respuesta tiene contenido antes de parsear JSON
+      const contentType = response.headers.get('content-type')
+      let data: any = null
+
+      if (contentType && contentType.includes('application/json')) {
+        try {
+          const text = await response.text()
+          data = text ? JSON.parse(text) : null
+        } catch (parseError) {
+          console.error('Error parseando respuesta JSON:', parseError)
+          data = null
+        }
+      }
 
       if (response.ok) {
         onDelete()
       } else {
-        alert('Error al eliminar la cita')
+        const errorMessage = data?.error || `Error ${response.status}: ${response.statusText}`
+        alert(`Error: ${errorMessage}`)
+        console.error('Error al eliminar cita:', {
+          status: response.status,
+          statusText: response.statusText,
+          data
+        })
       }
-    } catch (error) {
+    } catch (error: any) {
       console.error('Error eliminando cita:', error)
-      alert('Error al eliminar la cita')
+      
+      // Distinguir entre errores de red y otros errores
+      if (error.name === 'TypeError' && error.message.includes('fetch')) {
+        alert('Error de conexión. Por favor, verifica tu conexión a internet e intenta de nuevo.')
+      } else {
+        alert(`Error inesperado: ${error.message || 'Por favor, intenta de nuevo.'}`)
+      }
     }
   }
 
