@@ -116,3 +116,27 @@ model NonWorkingDay {
   createdAt     DateTime @default(now())
   updatedAt     DateTime @updatedAt
 }
+
+// --- Bot de Mochilas (sesión y datos separados del bot de citas) ---
+
+model BackpackBotSession {
+  id          String   @id @default(cuid())
+  phoneNumber String   @unique
+  isActive    Boolean  @default(true)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+}
+
+model BackpackProduct {
+  id          String   @id @default(cuid())
+  name        String   // Nombre del producto
+  description String   // Descripción para búsqueda y mostrar al usuario
+  imageUrl    String?  // URL de la imagen (opcional)
+  useType     String   // "school" | "work"
+  gender      String   // "man" | "woman" | "unisex"
+  price       Float    @default(0) // Precio del producto
+  stock       Int      @default(0) // Cantidad en existencia
+  isActive    Boolean  @default(true)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+}

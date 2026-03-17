@@ -36,8 +36,12 @@ next-env.d.ts
 # Prisma
 /prisma/migrations
 
+# Uploads (imágenes subidas por el usuario)
+/public/uploads/
+
 # WhatsApp session
 /.wwebjs_auth/
+/.wwebjs_auth_backpack/
 /.wwebjs_cache/
 
 # Logs

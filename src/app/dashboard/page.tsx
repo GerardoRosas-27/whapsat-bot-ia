@@ -24,6 +24,7 @@ export default function Dashboard() {
   const [loading, setLoading] = useState(true)
   const [showForm, setShowForm] = useState(false)
   const [filter, setFilter] = useState<string>('all')
+  const [isAdmin, setIsAdmin] = useState(false)
 
   useEffect(() => {
     const token = localStorage.getItem('token')
@@ -32,6 +33,10 @@ export default function Dashboard() {
       return
     }
     fetchAppointments()
+    fetch('/api/auth/me', { headers: { Authorization: `Bearer ${token}` } })
+      .then(r => r.ok ? r.json() : null)
+      .then(data => setIsAdmin(data?.role === 'admin'))
+      .catch(() => {})
   }, [router, filter])
 
   const fetchAppointments = async () => {
@@ -112,6 +117,23 @@ export default function Dashboard() {
             >
               ⚙️ Configurar Bot
             </button>
+            {isAdmin && (
+              <button
+                onClick={() => router.push('/dashboard/backpack-config')}
+                style={{
+                  padding: '8px 20px',
+                  background: 'rgba(255,255,255,0.2)',
+                  border: '1px solid rgba(255,255,255,0.3)',
+                  borderRadius: '6px',
+                  color: 'white',
+                  cursor: 'pointer',
+                  fontSize: '14px',
+                  fontWeight: '500'
+                }}
+              >
+                👜 Bot Mochilas
+              </button>
+            )}
             <button
               onClick={handleLogout}
               style={{
