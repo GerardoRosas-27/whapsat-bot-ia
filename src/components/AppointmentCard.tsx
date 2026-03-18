@@ -1,6 +1,6 @@
 'use client'
 
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import { format } from 'date-fns'
 import { es } from 'date-fns/locale/es'
 
@@ -40,6 +40,25 @@ export default function AppointmentCard({ appointment, onUpdate, onDelete }: App
     notes: appointment.notes || ''
   })
 
+  useEffect(() => {
+    setFormData({
+      patientName: appointment.patientName,
+      phoneNumber: appointment.phoneNumber,
+      date: format(new Date(appointment.date), 'yyyy-MM-dd'),
+      time: appointment.time,
+      status: appointment.status,
+      notes: appointment.notes || ''
+    })
+  }, [
+    appointment.id,
+    appointment.patientName,
+    appointment.phoneNumber,
+    appointment.date,
+    appointment.time,
+    appointment.status,
+    appointment.notes
+  ])
+
   const statusInfo = statusColors[appointment.status] || statusColors.pending
   const formattedDate = format(new Date(appointment.date), "EEEE, d 'de' MMMM 'de' yyyy", { locale: es })
 
@@ -51,31 +70,35 @@ export default function AppointmentCard({ appointment, onUpdate, onDelete }: App
         return
       }
 
+      const body = {
+        patientName: formData.patientName,
+        phoneNumber: formData.phoneNumber,
+        date: new Date(formData.date + 'T12:00:00').toISOString(),
+        time: formData.time,
+        status: formData.status,
+        notes: formData.notes
+      }
+
       const response = await fetch(`/api/appointments/${appointment.id}`, {
         method: 'PATCH',
         headers: {
           'Content-Type': 'application/json',
-          'Authorization': `Bearer ${token}`
+          Authorization: `Bearer ${token}`
         },
-        body: JSON.stringify({
-          ...formData,
-          date: new Date(formData.date).toISOString()
-        })
+        body: JSON.stringify(body)
       })
 
-      const data = await response.json()
+      const data = await response.json().catch(() => ({}))
 
       if (response.ok) {
         setIsEditing(false)
         onUpdate()
       } else {
-        const errorMessage = data.error || 'Error al actualizar la cita'
-        alert(`Error: ${errorMessage}`)
-        console.error('Error al actualizar cita:', data)
+        alert(data.error || `Error al guardar (${response.status})`)
       }
     } catch (error) {
       console.error('Error actualizando cita:', error)
-      alert('Error de conexión. Por favor, verifica tu conexión a internet e intenta de nuevo.')
+      alert('Error de conexión.')
     }
   }
 
@@ -87,57 +110,27 @@ export default function AppointmentCard({ appointment, onUpdate, onDelete }: App
     try {
       const token = localStorage.getItem('token')
       if (!token) {
-        alert('No estás autenticado. Por favor, inicia sesión nuevamente.')
+        alert('No estás autenticado.')
         return
       }
 
-      console.log('[DELETE] Intentando eliminar cita con ID:', appointment.id)
-      console.log('[DELETE] URL:', `/api/appointments/${appointment.id}`)
-      
       const response = await fetch(`/api/appointments/${appointment.id}`, {
         method: 'DELETE',
         headers: {
-          'Authorization': `Bearer ${token}`,
-          'Content-Type': 'application/json'
+          Authorization: `Bearer ${token}`
         }
       })
-      
-      console.log('[DELETE] Respuesta recibida:', response.status, response.statusText)
-
-      // Verificar si la respuesta tiene contenido antes de parsear JSON
-      const contentType = response.headers.get('content-type')
-      let data: any = null
-
-      if (contentType && contentType.includes('application/json')) {
-        try {
-          const text = await response.text()
-          data = text ? JSON.parse(text) : null
-        } catch (parseError) {
-          console.error('Error parseando respuesta JSON:', parseError)
-          data = null
-        }
-      }
 
       if (response.ok) {
         onDelete()
-      } else {
-        const errorMessage = data?.error || `Error ${response.status}: ${response.statusText}`
-        alert(`Error: ${errorMessage}`)
-        console.error('Error al eliminar cita:', {
-          status: response.status,
-          statusText: response.statusText,
-          data
-        })
+        return
       }
-    } catch (error: any) {
+
+      const data = await response.json().catch(() => ({}))
+      alert(data.error || `Error al eliminar (${response.status})`)
+    } catch (error) {
       console.error('Error eliminando cita:', error)
-      
-      // Distinguir entre errores de red y otros errores
-      if (error.name === 'TypeError' && error.message.includes('fetch')) {
-        alert('Error de conexión. Por favor, verifica tu conexión a internet e intenta de nuevo.')
-      } else {
-        alert(`Error inesperado: ${error.message || 'Por favor, intenta de nuevo.'}`)
-      }
+      alert('Error de conexión.')
     }
   }
 
