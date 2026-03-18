@@ -1,6 +1,7 @@
 'use client'
 
 import { useEffect, useState } from 'react'
+import ResponsiveTableScroll from '@/components/ResponsiveTableScroll'
 
 interface DateFormat {
   id: string
@@ -369,6 +370,7 @@ export default function BotDateFormatsManager() {
         overflow: 'hidden',
         boxShadow: '0 2px 4px rgba(0,0,0,0.1)'
       }}>
+        <ResponsiveTableScroll minWidth={900}>
         <table style={{ width: '100%', borderCollapse: 'collapse' }}>
           <thead>
             <tr style={{ background: '#f9fafb', borderBottom: '2px solid #e5e7eb' }}>
@@ -448,6 +450,7 @@ export default function BotDateFormatsManager() {
             ))}
           </tbody>
         </table>
+        </ResponsiveTableScroll>
         {formats.length === 0 && (
           <div style={{ padding: '40px', textAlign: 'center', color: '#666' }}>
             No hay formatos configurados. Crea uno nuevo para comenzar.

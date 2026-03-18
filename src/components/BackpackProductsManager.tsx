@@ -1,6 +1,7 @@
 'use client'
 
 import { useEffect, useState } from 'react'
+import ResponsiveTableScroll from '@/components/ResponsiveTableScroll'
 
 interface BackpackProduct {
   id: string
@@ -404,6 +405,7 @@ export default function BackpackProductsManager() {
             No hay productos. Agrega mochilas para que el bot pueda mostrarlas.
           </div>
         ) : (
+          <ResponsiveTableScroll minWidth={900}>
           <table style={{ width: '100%', borderCollapse: 'collapse', color: '#000' }}>
             <thead>
               <tr style={{ background: '#f9fafb', borderBottom: '1px solid #e5e7eb' }}>
@@ -457,6 +459,7 @@ export default function BackpackProductsManager() {
               ))}
             </tbody>
           </table>
+          </ResponsiveTableScroll>
         )}
       </div>
     </div>

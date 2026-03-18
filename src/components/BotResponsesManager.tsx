@@ -1,6 +1,7 @@
 'use client'
 
 import { useEffect, useState } from 'react'
+import ResponsiveTableScroll from '@/components/ResponsiveTableScroll'
 
 interface BotResponse {
   id: string
@@ -373,6 +374,7 @@ export default function BotResponsesManager() {
         overflow: 'hidden',
         boxShadow: '0 2px 4px rgba(0,0,0,0.1)'
       }}>
+        <ResponsiveTableScroll minWidth={920}>
         <table style={{ width: '100%', borderCollapse: 'collapse' }}>
           <thead>
             <tr style={{ background: '#f9fafb', borderBottom: '2px solid #e5e7eb' }}>
@@ -471,6 +473,7 @@ export default function BotResponsesManager() {
             ))}
           </tbody>
         </table>
+        </ResponsiveTableScroll>
         {responses.length === 0 && (
           <div style={{ padding: '40px', textAlign: 'center', color: '#666' }}>
             No hay respuestas configuradas. Crea una nueva para comenzar.
