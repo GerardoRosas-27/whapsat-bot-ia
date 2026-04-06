@@ -286,10 +286,14 @@ export default function BackpackProductsManager() {
                   style={{ color: '#000', maxWidth: '280px' }}
                 />
                 {uploadingImage && <span style={{ fontSize: '13px', color: '#666' }}>Subiendo y optimizando…</span>}
-                <span style={{ fontSize: '12px', color: '#666' }}>O pega una URL (opcional):</span>
+                <span style={{ fontSize: '12px', color: '#666' }}>
+                  Ruta o URL (opcional). Si subes archivo, se guarda como ruta relativa (ej. /uploads/products/…), que también es válida.
+                </span>
                 <input
-                  type="url"
-                  placeholder="https://..."
+                  type="text"
+                  inputMode="url"
+                  autoComplete="off"
+                  placeholder="/uploads/products/… o https://..."
                   value={formData.imageUrl}
                   onChange={e => setFormData({ ...formData, imageUrl: e.target.value })}
                   style={{ width: '100%', padding: '8px', borderRadius: '4px', border: '1px solid #ccc', color: '#000' }}

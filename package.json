@@ -10,6 +10,8 @@
     "lint": "next lint",
     "bot": "tsx src/bot/whatsapp-bot.ts",
     "bot:backpack": "tsx src/bot/backpack-bot.ts",
+    "seed:backpack-policy": "tsx scripts/seed-backpack-policy.ts",
+    "debug:backpack-llm": "tsx scripts/debug-backpack-llm-conversation.ts",
     "test": "jest",
     "test:watch": "jest --watch",
     "test:coverage": "jest --coverage"
@@ -19,6 +21,7 @@
     "axios": "^1.6.2",
     "bcryptjs": "^2.4.3",
     "date-fns": "^3.0.6",
+    "dotenv": "^17.4.0",
     "jsonwebtoken": "^9.0.2",
     "next": "^14.0.4",
     "qrcode-terminal": "^0.12.0",

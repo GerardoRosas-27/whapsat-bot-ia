@@ -4,9 +4,13 @@ import { useEffect, useState } from 'react'
 import { useRouter } from 'next/navigation'
 import BotStatusBackpack from '@/components/BotStatusBackpack'
 import BackpackProductsManager from '@/components/BackpackProductsManager'
+import BackpackBotPolicyManager from '@/components/BackpackBotPolicyManager'
+
+type BackpackTab = 'status' | 'rules' | 'products'
 
 export default function BackpackConfigPage() {
   const router = useRouter()
+  const [activeTab, setActiveTab] = useState<BackpackTab>('status')
   const [isAdmin, setIsAdmin] = useState(false)
   const [loading, setLoading] = useState(true)
 
@@ -87,7 +91,7 @@ export default function BackpackConfigPage() {
               Configuración Bot de Mochilas
             </h1>
             <p style={{ fontSize: '14px', opacity: 0.9 }}>
-              Administra productos y estado del bot de WhatsApp (mochilas)
+              Estado, reglas del bot y catálogo de mochilas
             </p>
           </div>
           <div style={{ display: 'flex', gap: '10px' }}>
@@ -115,8 +119,47 @@ export default function BackpackConfigPage() {
         margin: '0 auto',
         padding: '40px 20px'
       }}>
-        <BotStatusBackpack />
-        <BackpackProductsManager />
+        <div
+          style={{
+            display: 'flex',
+            gap: '8px',
+            marginBottom: '24px',
+            flexWrap: 'wrap',
+            borderBottom: '1px solid #e2e8f0',
+            paddingBottom: '4px'
+          }}
+        >
+          {(
+            [
+              { id: 'status' as const, label: 'Estado del bot' },
+              { id: 'rules' as const, label: 'Reglas e información' },
+              { id: 'products' as const, label: 'Productos' }
+            ] as const
+          ).map((tab) => (
+            <button
+              key={tab.id}
+              type="button"
+              onClick={() => setActiveTab(tab.id)}
+              style={{
+                padding: '10px 18px',
+                border: 'none',
+                borderRadius: '8px 8px 0 0',
+                cursor: 'pointer',
+                fontSize: '14px',
+                fontWeight: 600,
+                background: activeTab === tab.id ? 'white' : 'transparent',
+                color: activeTab === tab.id ? '#047857' : '#64748b',
+                boxShadow: activeTab === tab.id ? '0 -2px 0 #059669 inset' : 'none'
+              }}
+            >
+              {tab.label}
+            </button>
+          ))}
+        </div>
+
+        {activeTab === 'status' && <BotStatusBackpack />}
+        {activeTab === 'rules' && <BackpackBotPolicyManager />}
+        {activeTab === 'products' && <BackpackProductsManager />}
       </main>
     </div>
   )

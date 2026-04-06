@@ -1,16 +1,31 @@
+import 'dotenv/config'
 import { Client, LocalAuth, Message, MessageMedia } from 'whatsapp-web.js'
 import qrcode from 'qrcode-terminal'
 import { prisma } from '../lib/prisma'
+import {
+  getLlmBaseUrl,
+  getLlmModel,
+  isBackpackLlmEnabled
+} from '../lib/backpack-lm-studio'
+import {
+  fetchBackpackCatalogForLlm,
+  pickCatalogReferenceImages
+} from '../lib/backpack-llm-context'
+import { runBackpackLlmTurn, type BackpackLlmHistoryTurn } from '../lib/backpack-llm-pipeline'
 
 /** URL pública de la app (para que WhatsApp pueda cargar imágenes). En producción define APP_PUBLIC_URL o NEXT_PUBLIC_APP_URL. */
 const APP_BASE_URL = process.env.APP_PUBLIC_URL || process.env.NEXT_PUBLIC_APP_URL || 'http://localhost:3000'
 
 type BackpackBotState = 'idle'
 
+type LlmTurn = BackpackLlmHistoryTurn
+
 interface BackpackUserSession {
   phoneNumber: string
   state: BackpackBotState
-  context?: Record<string, unknown>
+  context?: {
+    llmHistory?: BackpackLlmHistoryTurn[]
+  } & Record<string, unknown>
   createdAt: Date
   updatedAt: Date
 }
@@ -37,12 +52,67 @@ Escribe cómo es la mochila que buscas (ej: con espacio para laptop, color negro
 6️⃣ Entre $160 y $260
 7️⃣ Mayor a $260
 
+*Información del negocio:*
+Escribe *info* o *horarios* (envíos, mayoreo, modelos, etc.)
+
 Responde con el número *(1 al 7)* o escribe tu descripción.`
+
+const BACKPACK_POLICY_CACHE_MS = 45_000
+
+/** Frases que disparan la respuesta de información del negocio (además de *info*, *horarios*, etc.) */
+const BUSINESS_INFO_PHRASES = [
+  'horario',
+  'horarios',
+  'a qué hora',
+  'a que hora',
+  'qué hora abren',
+  'que hora abren',
+  'abren',
+  'cierran',
+  'cerrado',
+  'abierto',
+  'envío',
+  'envio',
+  'envían',
+  'envian',
+  'mayoreo',
+  'minorista',
+  'menudeo',
+  'por mayor',
+  'por menor',
+  'mayorista',
+  'catálogo',
+  'catalogo',
+  'otro modelo',
+  'otros modelos',
+  'tienen otros',
+  'hay otros',
+  'dirección',
+  'direccion',
+  'ubicación',
+  'ubicacion',
+  'donde están',
+  'donde estan',
+  'dónde están',
+  'teléfono',
+  'telefono',
+  'contacto',
+  'información',
+  'informacion',
+  'política',
+  'politica'
+]
 
 class BackpackWhatsAppBot {
   private client: Client
   private isReady = false
   private userSessions: Map<string, BackpackUserSession> = new Map()
+  private policyCache: {
+    rulesForBot: string
+    customerFacts: string
+    interactionWorkflow: string
+    fetchedAt: number
+  } | null = null
 
   constructor() {
     this.client = new Client({
@@ -121,6 +191,15 @@ class BackpackWhatsAppBot {
 
     this.client.on('ready', () => {
       console.log('[BackpackBot] Bot de Mochilas listo!')
+      if (isBackpackLlmEnabled()) {
+        console.log(
+          `[BackpackBot] LLM activo → ${getLlmBaseUrl()} | modelo: ${getLlmModel()}`
+        )
+      } else {
+        console.log(
+          '[BackpackBot] Modo clásico (sin LLM). Activa BACKPACK_LLM_ENABLED=true en .env y reinicia.'
+        )
+      }
       this.isReady = true
     })
 
@@ -140,6 +219,157 @@ class BackpackWhatsAppBot {
   private formatPrice(price: number | null | undefined): string {
     const n = price ?? 0
     return `$${Number(n).toFixed(2)}`
+  }
+
+  /** Política del negocio (reglas + datos al cliente), con caché breve para no saturar SQLite */
+  private async getBackpackPolicy(): Promise<{
+    rulesForBot: string
+    customerFacts: string
+    interactionWorkflow: string
+  }> {
+    const now = Date.now()
+    if (
+      this.policyCache &&
+      now - this.policyCache.fetchedAt < BACKPACK_POLICY_CACHE_MS
+    ) {
+      return {
+        rulesForBot: this.policyCache.rulesForBot,
+        customerFacts: this.policyCache.customerFacts,
+        interactionWorkflow: this.policyCache.interactionWorkflow
+      }
+    }
+    const row = await prisma.backpackBotPolicy.findUnique({
+      where: { id: 'singleton' }
+    })
+    const rulesForBot = row?.rulesForBot?.trim() ?? ''
+    const customerFacts = row?.customerFacts?.trim() ?? ''
+    const interactionWorkflow = row?.interactionWorkflow?.trim() ?? ''
+    this.policyCache = {
+      rulesForBot,
+      customerFacts,
+      interactionWorkflow,
+      fetchedAt: now
+    }
+    return { rulesForBot, customerFacts, interactionWorkflow }
+  }
+
+  private static readonly WHATSAPP_REPLY_MAX = 3900
+
+  /** Descarga imagen del mensaje de WhatsApp (si aplica). */
+  private async extractUserImageDataUrl(message: Message): Promise<string | null> {
+    const t = message.type
+    if (!message.hasMedia) {
+      if (t === 'image' || t === 'sticker') {
+        console.warn(
+          `[BackpackBot] Mensaje type=${t} pero hasMedia=false (sin directPath). No se puede descargar aún.`
+        )
+      }
+      return null
+    }
+    try {
+      const media = await message.downloadMedia()
+      if (!media) {
+        console.warn(
+          '[BackpackBot] downloadMedia() devolvió vacío (media no lista o expirada). Reintenta enviar la foto.'
+        )
+        return null
+      }
+      if (!media.mimetype?.startsWith('image/')) {
+        console.warn(`[BackpackBot] Media no es imagen: ${media.mimetype}`)
+        return null
+      }
+      const dataUrl = `data:${media.mimetype};base64,${media.data}`
+      console.log(
+        `[BackpackBot] Imagen lista para LLM (${media.mimetype}, ${media.data?.length ?? 0} chars base64)`
+      )
+      return dataUrl
+    } catch (e) {
+      console.error('[BackpackBot] Error descargando imagen:', e)
+      return null
+    }
+  }
+
+  /** Respuesta vía LM Studio (OpenAI-compatible) con catálogo y opcional visión. */
+  private async replyWithLlm(
+    message: Message,
+    phoneNumber: string,
+    body: string
+  ): Promise<void> {
+    const policy = await this.getBackpackPolicy()
+    const products = await fetchBackpackCatalogForLlm()
+    const userImageDataUrl = await this.extractUserImageDataUrl(message)
+    const catalogRefCount = userImageDataUrl
+      ? pickCatalogReferenceImages(products).length
+      : 0
+
+    console.log(
+      `[BackpackBot] LLM turn: texto="${body.slice(0, 80)}${body.length > 80 ? '…' : ''}" | imagenUsuario=${Boolean(userImageDataUrl)} | imgsCatálogo=${catalogRefCount}`
+    )
+
+    const session = await this.getSession(phoneNumber)
+    const prevHistory = session.context?.llmHistory ?? []
+
+    let reply = await runBackpackLlmTurn({
+      userText: body,
+      userImageDataUrl,
+      policy: {
+        rulesForBot: policy.rulesForBot,
+        customerFacts: policy.customerFacts,
+        interactionWorkflow: policy.interactionWorkflow
+      },
+      products,
+      history: prevHistory,
+      temperature: 0.45
+    })
+
+    if (reply.length > BackpackWhatsAppBot.WHATSAPP_REPLY_MAX) {
+      reply =
+        reply.slice(0, BackpackWhatsAppBot.WHATSAPP_REPLY_MAX - 20) + '\n…'
+    }
+
+    await message.reply(reply)
+
+    const userLog =
+      (userImageDataUrl ? '[imagen] ' : '') +
+      (body.trim() || '(sin texto)')
+    const nextHistory: LlmTurn[] = [
+      ...prevHistory,
+      { role: 'user', content: userLog.slice(0, 2000) },
+      { role: 'assistant', content: reply.slice(0, 2000) }
+    ]
+    while (nextHistory.length > 8) {
+      nextHistory.shift()
+    }
+    await this.updateSessionState(phoneNumber, 'idle', {
+      llmHistory: nextHistory
+    })
+  }
+
+  private isExplicitInfoCommand(lowerBody: string): boolean {
+    const t = lowerBody.trim()
+    if (t === 'info' || t === 'datos') return true
+    if (t === 'horarios' || t === 'horario') return true
+    if (t === 'información' || t === 'informacion') return true
+    if (t.startsWith('info ') || t.startsWith('datos ')) return true
+    return false
+  }
+
+  /** Evita confundir descripciones largas de producto con preguntas de tienda */
+  private messageLooksLikeBusinessInfo(lowerBody: string): boolean {
+    const t = lowerBody.trim()
+    if (t.length > 140) return false
+    if (/^\d+$/.test(t)) return false
+    return BUSINESS_INFO_PHRASES.some((p) => t.includes(p))
+  }
+
+  private formatCustomerFactsReply(facts: string): string {
+    if (!facts) {
+      return (
+        '📋 Aún no hay información de tienda configurada.\n\n' +
+        'Escribe *hola* para ver el menú de productos.'
+      )
+    }
+    return `📋 *Información*\n\n${facts}\n\n_Escribe *hola* para el menú de mochilas._`
   }
 
   /** Buscar productos por nombre o descripción (en existencia), insensible a mayúsculas */
@@ -282,7 +512,10 @@ class BackpackWhatsAppBot {
     if (message.fromMe) return
     const contact = await message.getContact()
     const phoneNumber = contact.number
-    const body = message.body.trim()
+    const body =
+      typeof message.body === 'string'
+        ? message.body.trim()
+        : String(message.body ?? '').trim()
     const lowerBody = body.toLowerCase()
 
     if (message.from === 'status@broadcast' || message.from.endsWith('@g.us')) return
@@ -290,9 +523,42 @@ class BackpackWhatsAppBot {
     try {
       await this.getSession(phoneNumber)
 
-      // Menú de bienvenida con "hola" o "inicio"
+      if (isBackpackLlmEnabled()) {
+        try {
+          await this.replyWithLlm(message, phoneNumber, body)
+          return
+        } catch (err) {
+          console.error(
+            '[BackpackBot] LLM no disponible o error; usando flujo clásico:',
+            err
+          )
+          const visionIntent =
+            message.hasMedia ||
+            message.type === 'image' ||
+            message.type === 'sticker'
+          if (visionIntent) {
+            await message.reply(
+              'No pude usar el asistente con tu imagen (revisa LM Studio, red y LM_STUDIO_BASE_URL en .env). ' +
+                'Si el problema sigue, reenvía la foto en unos segundos.'
+            )
+            return
+          }
+        }
+      }
+
+      // Menú de bienvenida con "hola" o "inicio" (solo modo clásico o si falló el LLM)
       if (lowerBody === 'hola' || lowerBody === 'hi' || lowerBody === 'inicio') {
         await this.sendWelcomeMenu(message, phoneNumber)
+        return
+      }
+
+      // Información del negocio (texto configurado en admin: horarios, mayoreo, modelos, etc.)
+      if (
+        this.isExplicitInfoCommand(lowerBody) ||
+        this.messageLooksLikeBusinessInfo(lowerBody)
+      ) {
+        const { customerFacts } = await this.getBackpackPolicy()
+        await message.reply(this.formatCustomerFactsReply(customerFacts))
         return
       }
 

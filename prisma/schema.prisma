@@ -140,3 +140,13 @@ model BackpackProduct {
   createdAt   DateTime @default(now())
   updatedAt   DateTime @updatedAt
 }
+
+// Reglas e información del negocio para el bot de mochilas (una fila)
+model BackpackBotPolicy {
+  id                  String   @id @default("singleton")
+  rulesForBot         String   @default("") // Instrucciones / límites (system prompt)
+  customerFacts       String   @default("") // Horarios, ubicación, políticas (system prompt)
+  interactionWorkflow String   @default("") // Flujo de trabajo documentado (system prompt + editable en admin)
+  createdAt           DateTime @default(now())
+  updatedAt           DateTime @updatedAt
+}
