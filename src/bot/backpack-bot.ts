@@ -12,11 +12,15 @@ import {
   pickCatalogReferenceImages
 } from '../lib/backpack-llm-context'
 import { runBackpackLlmTurn, type BackpackLlmHistoryTurn } from '../lib/backpack-llm-pipeline'
+import {
+  runBackpackAgentTurn,
+  type BackpackAgentHistoryTurn
+} from '../lib/backpack-agent-pipeline'
 
 /** URL pública de la app (para que WhatsApp pueda cargar imágenes). En producción define APP_PUBLIC_URL o NEXT_PUBLIC_APP_URL. */
 const APP_BASE_URL = process.env.APP_PUBLIC_URL || process.env.NEXT_PUBLIC_APP_URL || 'http://localhost:3000'
 
-type BackpackBotState = 'idle'
+type BackpackBotState = 'idle' | 'agent'
 
 type LlmTurn = BackpackLlmHistoryTurn
 
@@ -25,10 +29,24 @@ interface BackpackUserSession {
   state: BackpackBotState
   context?: {
     llmHistory?: BackpackLlmHistoryTurn[]
+    agentHistory?: BackpackAgentHistoryTurn[]
   } & Record<string, unknown>
   createdAt: Date
   updatedAt: Date
 }
+
+/** Palabras que sacan al usuario del modo "Agente IA" y lo regresan al menú clásico. */
+const AGENT_EXIT_COMMANDS = new Set([
+  'menu',
+  'menú',
+  'salir',
+  'volver',
+  'inicio',
+  'hola',
+  'hi',
+  'regresar',
+  'cancelar'
+])
 
 /** Mensaje de bienvenida con menú de filtros (género 1-2, uso 3-4, precio 5-6-7) y búsqueda por descripción */
 const WELCOME_MENU = `👜 *Bienvenido a Mochilas y Novedades Kira*
@@ -52,10 +70,18 @@ Escribe cómo es la mochila que buscas (ej: con espacio para laptop, color negro
 6️⃣ Entre $160 y $260
 7️⃣ Mayor a $260
 
+*Asistente con IA:*
+8️⃣ Hablar con el *Agente IA* (resuelve dudas con lenguaje natural)
+
+📷 *Buscar por foto:* envía una imagen de la mochila que buscas y el Agente IA la compara con nuestro catálogo.
+
 *Información del negocio:*
 Escribe *info* o *horarios* (envíos, mayoreo, modelos, etc.)
 
-Responde con el número *(1 al 7)* o escribe tu descripción.`
+*Novedades:*
+Escribe *catálogo* o *novedades* para ver los 5 modelos más recientes.
+
+Responde con el número *(1 al 8)* o escribe tu descripción.`
 
 const BACKPACK_POLICY_CACHE_MS = 45_000
 
@@ -81,12 +107,6 @@ const BUSINESS_INFO_PHRASES = [
   'por mayor',
   'por menor',
   'mayorista',
-  'catálogo',
-  'catalogo',
-  'otro modelo',
-  'otros modelos',
-  'tienen otros',
-  'hay otros',
   'dirección',
   'direccion',
   'ubicación',
@@ -191,13 +211,13 @@ class BackpackWhatsAppBot {
 
     this.client.on('ready', () => {
       console.log('[BackpackBot] Bot de Mochilas listo!')
+      console.log(
+        `[BackpackBot] Agente IA disponible bajo demanda (opción 8) → ${getLlmBaseUrl()} | modelo: ${getLlmModel()}`
+      )
       if (isBackpackLlmEnabled()) {
         console.log(
-          `[BackpackBot] LLM activo → ${getLlmBaseUrl()} | modelo: ${getLlmModel()}`
-        )
-      } else {
-        console.log(
-          '[BackpackBot] Modo clásico (sin LLM). Activa BACKPACK_LLM_ENABLED=true en .env y reinicia.'
+          '[BackpackBot] Nota: BACKPACK_LLM_ENABLED=true queda como informativo. ' +
+            'El LLM solo se usa cuando el cliente elige la opción 8 (Agente IA).'
         )
       }
       this.isReady = true
@@ -345,6 +365,59 @@ class BackpackWhatsAppBot {
     })
   }
 
+  /** Cantidad de productos recientes a mostrar cuando el usuario pide el catálogo */
+  private static readonly CATALOG_LATEST_LIMIT = 5
+
+  /** Frases que indican que el usuario quiere ver el catálogo / productos más recientes */
+  private static readonly CATALOG_REQUEST_PHRASES = [
+    'catálogo',
+    'catalogo',
+    'catálogos',
+    'catalogos',
+    'novedades',
+    'nuevos productos',
+    'productos nuevos',
+    'nuevos modelos',
+    'modelos nuevos',
+    'últimos modelos',
+    'ultimos modelos',
+    'últimas mochilas',
+    'ultimas mochilas',
+    'mochilas nuevas',
+    'lo más nuevo',
+    'lo mas nuevo',
+    'lo nuevo',
+    'qué hay nuevo',
+    'que hay nuevo',
+    'qué tienes nuevo',
+    'que tienes nuevo',
+    'qué tienen nuevo',
+    'que tienen nuevo',
+    'otros modelos',
+    'otro modelo',
+    'tienen otros',
+    'hay otros',
+    'más modelos',
+    'mas modelos'
+  ]
+
+  /** Detecta si el usuario está pidiendo ver el catálogo / productos más recientes */
+  private isCatalogRequest(lowerBody: string): boolean {
+    const t = lowerBody.trim()
+    if (!t || t.length > 140) return false
+    if (/^\d+$/.test(t)) return false
+    return BackpackWhatsAppBot.CATALOG_REQUEST_PHRASES.some((p) => t.includes(p))
+  }
+
+  /** Obtiene los N productos más recientes (por createdAt desc) activos */
+  private async getLatestProducts(limit: number) {
+    return prisma.backpackProduct.findMany({
+      where: { isActive: true },
+      orderBy: { createdAt: 'desc' },
+      take: limit
+    })
+  }
+
   private isExplicitInfoCommand(lowerBody: string): boolean {
     const t = lowerBody.trim()
     if (t === 'info' || t === 'datos') return true
@@ -453,7 +526,7 @@ class BackpackWhatsAppBot {
     const match = text.match(/^(\d+)/)
     if (match) {
       const num = parseInt(match[1], 10)
-      if (num >= 1 && num <= 7) return num
+      if (num >= 1 && num <= 8) return num
     }
     return null
   }
@@ -503,9 +576,264 @@ class BackpackWhatsAppBot {
     }
   }
 
+  /** Envía los últimos N productos con un formato breve (nombre + precio + imagen) */
+  private async sendLatestCatalog(message: Message): Promise<void> {
+    const products = await this.getLatestProducts(
+      BackpackWhatsAppBot.CATALOG_LATEST_LIMIT
+    )
+
+    if (products.length === 0) {
+      await message.reply(
+        '🆕 Aún no hay productos registrados en el catálogo.\n\n' +
+        '_Escribe *hola* para ver el menú principal._'
+      )
+      return
+    }
+
+    const title = `🆕 *Nuevos modelos* (los ${products.length} más recientes):`
+    let textReply = `${title}\n\n`
+    products.forEach((p, i) => {
+      textReply += `*${i + 1}. ${p.name}*\n`
+      textReply += `Precio: ${this.formatPrice(p.price)}\n\n`
+    })
+    textReply += '_Escribe *hola* para ver el menú completo._'
+    await message.reply(textReply.trim())
+
+    for (const p of products) {
+      const fullUrl = this.getImageUrl(p.imageUrl)
+      if (!fullUrl) continue
+      try {
+        const media = await MessageMedia.fromUrl(fullUrl, { unsafeMime: true })
+        const caption = `*${p.name}*\nPrecio: ${this.formatPrice(p.price)}`
+        await this.client.sendMessage(message.from, media, { caption })
+      } catch (err) {
+        console.error(
+          '[BackpackBot] No se pudo enviar imagen del catálogo:',
+          fullUrl,
+          err
+        )
+      }
+    }
+  }
+
   private async sendWelcomeMenu(message: Message, phoneNumber: string) {
-    await this.updateSessionState(phoneNumber, 'idle', {})
+    await this.updateSessionState(phoneNumber, 'idle', {
+      agentHistory: []
+    })
     await message.reply(WELCOME_MENU)
+  }
+
+  /** Activa el modo "Agente IA" para este usuario (independiente de BACKPACK_LLM_ENABLED). */
+  private async enterAgentMode(
+    message: Message,
+    phoneNumber: string
+  ): Promise<void> {
+    await this.updateSessionState(phoneNumber, 'agent', {
+      agentHistory: []
+    })
+    await message.reply(
+      '🤖 *Agente IA activado*\n\n' +
+        'Puedes preguntarme en lenguaje natural sobre nuestras mochilas, precios, existencias, horarios, envíos, etc.\n\n' +
+        '_Para regresar al menú principal escribe *menu* o *salir*._'
+    )
+  }
+
+  /** Detecta si el mensaje trae imagen o sticker (aunque hasMedia aún no esté listo). */
+  private messageHasImage(message: Message): boolean {
+    return (
+      message.hasMedia ||
+      message.type === 'image' ||
+      message.type === 'sticker'
+    )
+  }
+
+  /**
+   * Turno del agente con imagen: usa el pipeline con visión (runBackpackLlmTurn) para
+   * comparar la foto del cliente contra el catálogo de la BD y responder con coincidencias.
+   */
+  private async handleAgentVisionTurn(
+    message: Message,
+    phoneNumber: string,
+    body: string
+  ): Promise<void> {
+    const userImageDataUrl = await this.extractUserImageDataUrl(message)
+    if (!userImageDataUrl) {
+      await message.reply(
+        'No pude descargar tu imagen (WhatsApp aún no la entrega o expiró). Por favor reenvíala.'
+      )
+      return
+    }
+
+    const policy = await this.getBackpackPolicy()
+    const products = await fetchBackpackCatalogForLlm()
+    const session = await this.getSession(phoneNumber)
+    const prevVisionHistory = session.context?.llmHistory ?? []
+
+    const catalogRefCount = pickCatalogReferenceImages(products).length
+    console.log(
+      `[BackpackBot] Agente IA (visión): texto="${body.slice(0, 80)}${body.length > 80 ? '…' : ''}" | imgsCatálogo=${catalogRefCount}`
+    )
+
+    let reply: string
+    try {
+      reply = await runBackpackLlmTurn({
+        userText:
+          body.trim() ||
+          'Busca esta mochila en tu catálogo y dime qué coincidencias hay (nombre exacto, precio y stock). Si ninguna se parece, dilo en una línea.',
+        userImageDataUrl,
+        policy: {
+          rulesForBot: policy.rulesForBot,
+          customerFacts: policy.customerFacts,
+          interactionWorkflow: policy.interactionWorkflow
+        },
+        products,
+        history: prevVisionHistory,
+        temperature: 0.35
+      })
+    } catch (err) {
+      console.error('[BackpackBot] Agente IA (visión) no disponible:', err)
+      await message.reply(
+        '⚠️ El *Agente IA* no pudo analizar tu imagen en este momento. Te regreso al menú principal.'
+      )
+      await this.sendWelcomeMenu(message, phoneNumber)
+      return
+    }
+
+    if (!reply || reply.trim().length === 0) {
+      await message.reply(
+        '⚠️ El *Agente IA* no devolvió una respuesta. Te regreso al menú principal.'
+      )
+      await this.sendWelcomeMenu(message, phoneNumber)
+      return
+    }
+
+    if (reply.length > BackpackWhatsAppBot.WHATSAPP_REPLY_MAX) {
+      reply = reply.slice(0, BackpackWhatsAppBot.WHATSAPP_REPLY_MAX - 20) + '\n…'
+    }
+
+    await message.reply(reply)
+
+    // También enviamos las imágenes de los productos del catálogo que el LLM mencionó
+    // por nombre, para que el cliente las vea en WhatsApp.
+    await this.sendMatchedCatalogImages(message, reply, products)
+
+    const nextVisionHistory: LlmTurn[] = [
+      ...prevVisionHistory,
+      { role: 'user', content: `[imagen] ${body.trim() || '(sin texto)'}`.slice(0, 2000) },
+      { role: 'assistant', content: reply.slice(0, 2000) }
+    ]
+    while (nextVisionHistory.length > 8) {
+      nextVisionHistory.shift()
+    }
+    const existingAgentHistory =
+      session.context?.agentHistory ?? []
+    await this.updateSessionState(phoneNumber, 'agent', {
+      llmHistory: nextVisionHistory,
+      agentHistory: existingAgentHistory
+    })
+  }
+
+  /** Envía las imágenes de catálogo de los productos que el LLM mencionó por nombre. */
+  private async sendMatchedCatalogImages(
+    message: Message,
+    reply: string,
+    products: Awaited<ReturnType<typeof prisma.backpackProduct.findMany>>
+  ): Promise<void> {
+    const lower = reply.toLowerCase()
+    const matched = products.filter((p) => {
+      const name = p.name?.trim()
+      if (!name || name.length < 3) return false
+      return lower.includes(name.toLowerCase())
+    })
+    if (matched.length === 0) return
+
+    // Evita spam: máximo 3 imágenes.
+    const toSend = matched.slice(0, 3)
+    for (const p of toSend) {
+      const fullUrl = this.getImageUrl(p.imageUrl)
+      if (!fullUrl) continue
+      try {
+        const media = await MessageMedia.fromUrl(fullUrl, { unsafeMime: true })
+        const caption = `*${p.name}*\nPrecio: ${this.formatPrice(p.price)}${typeof p.stock === 'number' ? ` • Stock: ${p.stock}` : ''}`
+        await this.client.sendMessage(message.from, media, { caption })
+      } catch (err) {
+        console.error(
+          '[BackpackBot] No se pudo enviar imagen de coincidencia:',
+          fullUrl,
+          err
+        )
+      }
+    }
+  }
+
+  /** Maneja un mensaje estando en estado 'agent' (texto o imagen). */
+  private async handleAgentTurn(
+    message: Message,
+    phoneNumber: string,
+    body: string,
+    lowerBody: string
+  ): Promise<void> {
+    // Salir del agente: regresar al menú clásico sin pasar por el LLM.
+    const trimmed = lowerBody.trim()
+    if (trimmed && AGENT_EXIT_COMMANDS.has(trimmed)) {
+      await this.sendWelcomeMenu(message, phoneNumber)
+      return
+    }
+
+    // Turno con imagen → usa visión contra el catálogo de la BD.
+    if (this.messageHasImage(message)) {
+      await this.handleAgentVisionTurn(message, phoneNumber, body)
+      return
+    }
+
+    const policy = await this.getBackpackPolicy()
+    const products = await fetchBackpackCatalogForLlm()
+    const session = await this.getSession(phoneNumber)
+    const prevHistory = session.context?.agentHistory ?? []
+
+    let reply: string
+    try {
+      reply = await runBackpackAgentTurn({
+        userText: body,
+        policy: { customerFacts: policy.customerFacts },
+        products,
+        history: prevHistory,
+        temperature: 0.35
+      })
+    } catch (err) {
+      console.error('[BackpackBot] Agente IA no disponible:', err)
+      await message.reply(
+        '⚠️ El *Agente IA* no está disponible en este momento. Te regreso al menú principal.'
+      )
+      await this.sendWelcomeMenu(message, phoneNumber)
+      return
+    }
+
+    if (!reply || reply.trim().length === 0) {
+      await message.reply(
+        '⚠️ El *Agente IA* no devolvió una respuesta. Te regreso al menú principal.'
+      )
+      await this.sendWelcomeMenu(message, phoneNumber)
+      return
+    }
+
+    if (reply.length > BackpackWhatsAppBot.WHATSAPP_REPLY_MAX) {
+      reply = reply.slice(0, BackpackWhatsAppBot.WHATSAPP_REPLY_MAX - 20) + '\n…'
+    }
+
+    await message.reply(reply)
+
+    const nextHistory: BackpackAgentHistoryTurn[] = [
+      ...prevHistory,
+      { role: 'user', content: body.slice(0, 2000) },
+      { role: 'assistant', content: reply.slice(0, 2000) }
+    ]
+    while (nextHistory.length > 8) {
+      nextHistory.shift()
+    }
+    await this.updateSessionState(phoneNumber, 'agent', {
+      agentHistory: nextHistory
+    })
   }
 
   private async handleMessage(message: Message) {
@@ -521,34 +849,36 @@ class BackpackWhatsAppBot {
     if (message.from === 'status@broadcast' || message.from.endsWith('@g.us')) return
 
     try {
-      await this.getSession(phoneNumber)
+      const session = await this.getSession(phoneNumber)
 
-      if (isBackpackLlmEnabled()) {
-        try {
-          await this.replyWithLlm(message, phoneNumber, body)
-          return
-        } catch (err) {
-          console.error(
-            '[BackpackBot] LLM no disponible o error; usando flujo clásico:',
-            err
-          )
-          const visionIntent =
-            message.hasMedia ||
-            message.type === 'image' ||
-            message.type === 'sticker'
-          if (visionIntent) {
-            await message.reply(
-              'No pude usar el asistente con tu imagen (revisa LM Studio, red y LM_STUDIO_BASE_URL en .env). ' +
-                'Si el problema sigue, reenvía la foto en unos segundos.'
-            )
-            return
-          }
-        }
+      // Si el usuario eligió previamente "Agente IA", cada mensaje va al LLM
+      // (independiente de BACKPACK_LLM_ENABLED). El resto del flujo clásico queda intacto.
+      if (session.state === 'agent') {
+        await this.handleAgentTurn(message, phoneNumber, body, lowerBody)
+        return
       }
 
-      // Menú de bienvenida con "hola" o "inicio" (solo modo clásico o si falló el LLM)
+      // Imagen recibida en modo clásico → activa automáticamente el Agente IA
+      // y compara la foto contra el catálogo de la base de datos.
+      if (this.messageHasImage(message)) {
+        await this.updateSessionState(phoneNumber, 'agent', {
+          agentHistory: [],
+          llmHistory: []
+        })
+        await this.handleAgentVisionTurn(message, phoneNumber, body)
+        return
+      }
+
+      // Menú de bienvenida con "hola" o "inicio"
       if (lowerBody === 'hola' || lowerBody === 'hi' || lowerBody === 'inicio') {
         await this.sendWelcomeMenu(message, phoneNumber)
+        return
+      }
+
+      // Catálogo / novedades: 5 modelos más recientes (se evalúa antes de "info" para
+      // que "catálogo" no caiga en el texto genérico del negocio)
+      if (this.isCatalogRequest(lowerBody)) {
+        await this.sendLatestCatalog(message)
         return
       }
 
@@ -562,9 +892,14 @@ class BackpackWhatsAppBot {
         return
       }
 
-      // Opción de menú por número (1-7)
+      // Opción de menú por número (1-8)
       const menuNum = this.parseMenuNumber(body)
       if (menuNum !== null) {
+        // Opción 8: entrar al Agente IA (no depende de BACKPACK_LLM_ENABLED)
+        if (menuNum === 8) {
+          await this.enterAgentMode(message, phoneNumber)
+          return
+        }
         let products: Awaited<ReturnType<typeof prisma.backpackProduct.findMany>>
         let title: string
         switch (menuNum) {
