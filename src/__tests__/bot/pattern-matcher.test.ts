@@ -1,4 +1,4 @@
-import { PatternMatcher } from '@/bot/pattern-matcher'
+import { PatternMatcher } from '@/modules/appointments/bot'
 import { prisma } from '@/lib/prisma'
 
 // Mock dependencies
@@ -117,6 +117,13 @@ describe('PatternMatcher', () => {
     it('should return false for non-appointment messages', () => {
       expect(patternMatcher.isAppointmentRequest('hola')).toBe(false)
       expect(patternMatcher.isAppointmentRequest('gracias')).toBe(false)
+    })
+
+    it('should not treat appointment management commands as new appointment requests', () => {
+      expect(patternMatcher.isAppointmentRequest('mis citas')).toBe(false)
+      expect(patternMatcher.isAppointmentRequest('quiero ver mis citas')).toBe(false)
+      expect(patternMatcher.isAppointmentRequest('cancelar cita')).toBe(false)
+      expect(patternMatcher.isAppointmentRequest('reagendar cita')).toBe(false)
     })
   })
 

@@ -20,8 +20,8 @@ export function verifyToken(request: NextRequest): AuthUser | null {
       token,
       process.env.JWT_SECRET || 'your-secret-key'
     ) as AuthUser
-
-    return decoded
+    const { userId, username, role } = decoded
+    return { userId, username, role }
   } catch (error) {
     return null
   }

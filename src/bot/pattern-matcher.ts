@@ -56,6 +56,19 @@ export class PatternMatcher {
 
   isAppointmentRequest(text: string): boolean {
     const lowerText = text.toLowerCase()
+    const commandPatterns = [
+      /\bmis\s+citas\b/,
+      /\bver\s+citas\b/,
+      /\bcitas\s+programadas\b/,
+      /\bcancelar\b/,
+      /\breagendar\b/,
+      /\breprogramar\b/,
+      /\bconfirmar\b/
+    ]
+
+    if (commandPatterns.some(pattern => pattern.test(lowerText))) {
+      return false
+    }
     
     // Verificar patrones de solicitud
     for (const { pattern } of this.appointmentPatterns) {
@@ -65,8 +78,16 @@ export class PatternMatcher {
     }
 
     // Verificar palabras clave comunes
-    const keywords = ['agendar', 'cita', 'consulta', 'reservar', 'solicitar', 'pedir cita']
-    return keywords.some(keyword => lowerText.includes(keyword))
+    const keywords = [
+      /\bagendar\b/,
+      /\bconsulta\b/,
+      /\breservar\b/,
+      /\bsolicitar\b/,
+      /\bpedir\s+cita\b/,
+      /\bquiero\s+(una\s+)?cita\b/,
+      /\bnecesito\s+(una\s+)?cita\b/
+    ]
+    return keywords.some(pattern => pattern.test(lowerText))
   }
 
   parseDate(text: string): ParsedDate | null {
@@ -169,6 +190,9 @@ export class PatternMatcher {
           let minutes = 0
 
           if (timeFormat === 'HH:mm' || timeFormat === 'H:mm') {
+            if (/\b(am|pm)\b/i.test(text)) {
+              continue
+            }
             hours = parseInt(match[1])
             minutes = parseInt(match[2])
           } else if (timeFormat === 'HHmm') {

@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { prisma } from '@/lib/prisma'
 import { verifyToken } from '@/lib/auth'
+import { validateAppointmentDateTime } from '@/modules/appointments/domain'
 
 export async function GET(request: NextRequest) {
   try {
@@ -75,13 +76,21 @@ export async function POST(request: NextRequest) {
       )
     }
 
+    const validation = await validateAppointmentDateTime({ date, time, status })
+    if (!validation.ok) {
+      return NextResponse.json(
+        { error: validation.error },
+        { status: 400 }
+      )
+    }
+
     const appointment = await prisma.appointment.create({
       data: {
         patientName,
         phoneNumber,
-        date: new Date(date),
-        time,
-        status: status || 'pending',
+        date: validation.date,
+        time: validation.time,
+        status: validation.status,
         notes: notes || null
       }
     })

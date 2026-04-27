@@ -1,7 +1,8 @@
 import 'dotenv/config'
-import { Client, LocalAuth, Message, MessageMedia } from 'whatsapp-web.js'
+import { Client, Message, MessageMedia } from 'whatsapp-web.js'
 import qrcode from 'qrcode-terminal'
 import { prisma } from '../lib/prisma'
+import { createWhatsAppClient } from '../shared/whatsapp'
 import {
   getLlmBaseUrl,
   getLlmModel,
@@ -135,15 +136,7 @@ class BackpackWhatsAppBot {
   } | null = null
 
   constructor() {
-    this.client = new Client({
-      authStrategy: new LocalAuth({
-        dataPath: '.wwebjs_auth_backpack'
-      }),
-      puppeteer: {
-        headless: true,
-        args: ['--no-sandbox', '--disable-setuid-sandbox']
-      }
-    })
+    this.client = createWhatsAppClient('.wwebjs_auth_backpack')
     this.setupEventHandlers()
   }
 

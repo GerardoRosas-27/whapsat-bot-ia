@@ -1,7 +1,7 @@
 import React from 'react'
 import { render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
-import AppointmentCard from '@/components/AppointmentCard'
+import { AppointmentCard } from '@/modules/appointments/ui'
 
 const mockAppointment = {
   id: 'apt-1',

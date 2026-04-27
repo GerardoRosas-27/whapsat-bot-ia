@@ -1,4 +1,4 @@
-import { sanitizeLlmReplyForCustomer } from '@/lib/backpack-llm-context'
+import { sanitizeLlmReplyForCustomer } from '@/modules/backpack/domain'
 
 describe('sanitizeLlmReplyForCustomer', () => {
   it('elimina monólogo CoT en inglés y deja solo el mensaje en español', () => {

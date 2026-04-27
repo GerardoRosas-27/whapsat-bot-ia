@@ -1,4 +1,4 @@
-import { runBackpackLlmTurn, TINY_PNG_DATA_URL } from '@/lib/backpack-llm-pipeline'
+import { runBackpackLlmTurn, TINY_PNG_DATA_URL } from '@/modules/backpack/domain'
 import type { BackpackProduct } from '@prisma/client'
 
 const emptyPolicy = {

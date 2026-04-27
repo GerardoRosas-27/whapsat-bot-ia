@@ -2,11 +2,13 @@
 
 import { useEffect, useState } from 'react'
 import { useRouter } from 'next/navigation'
-import BotPatternsManager from '@/components/BotPatternsManager'
-import BotDateFormatsManager from '@/components/BotDateFormatsManager'
-import BotTimeFormatsManager from '@/components/BotTimeFormatsManager'
-import BotResponsesManager from '@/components/BotResponsesManager'
-import BusinessHoursManager from '@/components/BusinessHoursManager'
+import {
+  BotDateFormatsManager,
+  BotPatternsManager,
+  BotResponsesManager,
+  BotTimeFormatsManager,
+  BusinessHoursManager
+} from '@/modules/appointments/ui'
 
 export default function BotConfigPage() {
   const router = useRouter()

@@ -2,9 +2,11 @@
 
 import { useEffect, useState } from 'react'
 import { useRouter } from 'next/navigation'
-import BotStatusBackpack from '@/components/BotStatusBackpack'
-import BackpackProductsManager from '@/components/BackpackProductsManager'
-import BackpackBotPolicyManager from '@/components/BackpackBotPolicyManager'
+import {
+  BackpackBotPolicyManager,
+  BackpackProductsManager,
+  BotStatusBackpack
+} from '@/modules/backpack/ui'
 
 type BackpackTab = 'status' | 'rules' | 'products'
 

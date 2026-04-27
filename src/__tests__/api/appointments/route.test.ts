@@ -2,6 +2,7 @@ import { GET, POST } from '@/app/api/appointments/route'
 import { NextRequest } from 'next/server'
 import { prisma } from '@/lib/prisma'
 import { verifyToken } from '@/lib/auth'
+import { validateAppointmentDateTime } from '@/modules/appointments/domain'
 
 // Mock dependencies
 jest.mock('@/lib/prisma', () => ({
@@ -18,13 +19,23 @@ jest.mock('@/lib/prisma', () => ({
 }))
 
 jest.mock('@/lib/auth')
+jest.mock('@/modules/appointments/domain', () => ({
+  validateAppointmentDateTime: jest.fn(),
+}))
 
 const mockedPrisma = prisma as jest.Mocked<typeof prisma>
 const mockedVerifyToken = verifyToken as jest.MockedFunction<typeof verifyToken>
+const mockedValidateAppointmentDateTime = validateAppointmentDateTime as jest.MockedFunction<typeof validateAppointmentDateTime>
 
 describe('GET /api/appointments', () => {
   beforeEach(() => {
     jest.clearAllMocks()
+    mockedValidateAppointmentDateTime.mockResolvedValue({
+      ok: true,
+      date: new Date('2024-01-15'),
+      time: '10:00',
+      status: 'pending',
+    })
   })
 
   it('should return 401 when user is not authenticated', async () => {
@@ -198,6 +209,49 @@ describe('POST /api/appointments', () => {
     expect(response.status).toBe(201)
     expect(data.id).toBe('apt-1')
     expect(data.patientName).toBe('John Doe')
-    expect(mockedPrisma.appointment.create).toHaveBeenCalled()
+    expect(mockedPrisma.appointment.create).toHaveBeenCalledWith({
+      data: expect.objectContaining({
+        date: new Date('2024-01-15'),
+        time: '10:00',
+        status: 'pending',
+      }),
+    })
+  })
+
+  it('should reject appointments when date, time, status or availability are invalid', async () => {
+    const mockUser = {
+      userId: 'user-123',
+      username: 'admin',
+      role: 'admin',
+    }
+
+    mockedVerifyToken.mockReturnValue(mockUser)
+    mockedValidateAppointmentDateTime.mockResolvedValue({
+      ok: false,
+      error: 'El horario no está disponible',
+    })
+
+    const requestBody = JSON.stringify({
+      patientName: 'John Doe',
+      phoneNumber: '+1234567890',
+      date: '2024-01-15',
+      time: '10:00',
+    })
+
+    const request = new NextRequest('http://localhost:3000/api/appointments', {
+      method: 'POST',
+      body: requestBody,
+      headers: {
+        'Content-Type': 'application/json',
+      },
+    })
+    request.json = jest.fn().mockResolvedValue(JSON.parse(requestBody))
+
+    const response = await POST(request)
+    const data = await response.json()
+
+    expect(response.status).toBe(400)
+    expect(data.error).toBe('El horario no está disponible')
+    expect(mockedPrisma.appointment.create).not.toHaveBeenCalled()
   })
 })

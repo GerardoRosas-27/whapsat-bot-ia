@@ -30,6 +30,15 @@ jest.mock('@/lib/auth')
 const mockedPrisma = prisma as jest.Mocked<typeof prisma>
 const mockedVerifyToken = verifyToken as jest.MockedFunction<typeof verifyToken>
 
+function createPatternsPostRequest(body: Record<string, unknown>) {
+  const request = new NextRequest('http://localhost:3000/api/bot/patterns', {
+    method: 'POST',
+    body: JSON.stringify(body),
+  })
+  request.json = jest.fn().mockResolvedValue(body)
+  return request
+}
+
 describe('GET /api/bot/patterns', () => {
   beforeEach(() => {
     jest.clearAllMocks()
@@ -141,12 +150,9 @@ describe('POST /api/bot/patterns', () => {
     mockedVerifyToken.mockReturnValue(mockUser)
     mockedPrisma.appointmentPattern.create.mockResolvedValue(mockPattern as any)
 
-    const request = new NextRequest('http://localhost:3000/api/bot/patterns', {
-      method: 'POST',
-      body: JSON.stringify({
-        type: 'appointment',
-        data: { pattern: 'test', description: 'Test pattern', priority: 10, isActive: true }
-      }),
+    const request = createPatternsPostRequest({
+      type: 'appointment',
+      data: { pattern: 'test', description: 'Test pattern', priority: 10, isActive: true }
     })
 
     const response = await POST(request)
@@ -178,12 +184,9 @@ describe('POST /api/bot/patterns', () => {
     mockedVerifyToken.mockReturnValue(mockUser)
     mockedPrisma.dateFormat.create.mockResolvedValue(mockFormat as any)
 
-    const request = new NextRequest('http://localhost:3000/api/bot/patterns', {
-      method: 'POST',
-      body: JSON.stringify({
-        type: 'date',
-        data: mockFormat
-      }),
+    const request = createPatternsPostRequest({
+      type: 'date',
+      data: mockFormat
     })
 
     const response = await POST(request)
@@ -203,12 +206,9 @@ describe('POST /api/bot/patterns', () => {
 
     mockedVerifyToken.mockReturnValue(mockUser)
 
-    const request = new NextRequest('http://localhost:3000/api/bot/patterns', {
-      method: 'POST',
-      body: JSON.stringify({
-        type: 'invalid',
-        data: {}
-      }),
+    const request = createPatternsPostRequest({
+      type: 'invalid',
+      data: {}
     })
 
     const response = await POST(request)

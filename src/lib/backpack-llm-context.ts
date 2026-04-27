@@ -268,7 +268,8 @@ function stripLeadingEnglishReasoningBlocks(text: string): string {
     i += 1
   }
   if (i === 0) {
-    return raw
+    const fromSentences = stripEnglishCoTFromSingleBlock(raw)
+    return fromSentences.length > 0 ? fromSentences : raw
   }
   const tail = parts.slice(i).join('\n\n').trim()
   if (tail.length > 0) {

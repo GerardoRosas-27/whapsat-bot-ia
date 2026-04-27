@@ -2,9 +2,7 @@
 
 import { useEffect, useState } from 'react'
 import { useRouter } from 'next/navigation'
-import AppointmentList from '@/components/AppointmentList'
-import AppointmentForm from '@/components/AppointmentForm'
-import BotStatus from '@/components/BotStatus'
+import { AppointmentForm, AppointmentList, BotStatus } from '@/modules/appointments/ui'
 
 interface Appointment {
   id: string

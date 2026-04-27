@@ -1,7 +1,7 @@
 import React from 'react'
 import { render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
-import AppointmentForm from '@/components/AppointmentForm'
+import { AppointmentForm } from '@/modules/appointments/ui'
 
 describe('AppointmentForm', () => {
   const mockOnSuccess = jest.fn()

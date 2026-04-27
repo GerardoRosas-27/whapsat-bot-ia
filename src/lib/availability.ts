@@ -12,6 +12,22 @@ interface AvailabilityResult {
   suggestedSlots: TimeSlot[]
 }
 
+interface TimeSlotAvailabilityOptions {
+  excludeAppointmentId?: string
+}
+
+export function normalizeTime(time: string): string | null {
+  const match = time.trim().match(/^(\d{1,2})(?::(\d{1,2}))?$/)
+  if (!match) return null
+
+  const hours = Number(match[1])
+  const minutes = Number(match[2] ?? '0')
+  if (!Number.isInteger(hours) || !Number.isInteger(minutes)) return null
+  if (hours < 0 || hours > 23 || minutes < 0 || minutes > 59) return null
+
+  return `${hours.toString().padStart(2, '0')}:${minutes.toString().padStart(2, '0')}`
+}
+
 /**
  * Obtiene los horarios de atención configurados
  */
@@ -165,7 +181,7 @@ export async function checkDayAvailability(date: Date, requestedTime?: string): 
   const occupiedTimes = new Set(
     appointmentsByDate
       .filter(apt => apt.dateOnly === requestedDateOnly)
-      .map(apt => apt.time)
+      .map(apt => normalizeTime(apt.time) ?? apt.time)
   )
   
   // Verificar disponibilidad de cada slot
@@ -212,8 +228,16 @@ export async function checkDayAvailability(date: Date, requestedTime?: string): 
 /**
  * Verifica si un horario específico está disponible
  */
-export async function isTimeSlotAvailable(date: Date, time: string): Promise<boolean> {
+export async function isTimeSlotAvailable(
+  date: Date,
+  time: string,
+  options: TimeSlotAvailabilityOptions = {}
+): Promise<boolean> {
   const businessHours = await getBusinessHours()
+  const normalizedTime = normalizeTime(time)
+  if (!normalizedTime) {
+    return false
+  }
   
   // Verificar si es día no laborable
   const isNonWorking = await isNonWorkingDay(date)
@@ -222,7 +246,7 @@ export async function isTimeSlotAvailable(date: Date, time: string): Promise<boo
   }
   
   // Verificar que esté dentro del horario de atención
-  const [timeHour, timeMin] = time.split(':').map(Number)
+  const [timeHour, timeMin] = normalizedTime.split(':').map(Number)
   const [startHour, startMin] = businessHours.startTime.split(':').map(Number)
   const [endHour, endMin] = businessHours.endTime.split(':').map(Number)
   
@@ -251,17 +275,24 @@ export async function isTimeSlotAvailable(date: Date, time: string): Promise<boo
   const dayEnd = new Date(dayStart)
   dayEnd.setDate(dayEnd.getDate() + 1)
   
-  const existingAppointment = await prisma.appointment.findFirst({
+  const existingAppointments = await prisma.appointment.findMany({
     where: {
       date: {
         gte: dayStart,
         lt: dayEnd
       },
-      time: time,
       status: {
         in: ['pending', 'confirmed']
       }
     }
+  })
+
+  const existingAppointment = existingAppointments.find(appointment => {
+    if (options.excludeAppointmentId && appointment.id === options.excludeAppointmentId) {
+      return false
+    }
+
+    return normalizeTime(appointment.time) === normalizedTime
   })
   
   return !existingAppointment

@@ -1,10 +1,11 @@
-import { Client, LocalAuth, Message } from 'whatsapp-web.js'
+import { Client, Message } from 'whatsapp-web.js'
 import qrcode from 'qrcode-terminal'
 import { prisma } from '../lib/prisma'
 import { format, parse, addDays, isBefore, isAfter, setHours, setMinutes } from 'date-fns'
 import { es } from 'date-fns/locale/es'
 import { PatternMatcher } from './pattern-matcher'
-import { checkDayAvailability, isTimeSlotAvailable, findNextAvailableSlots, getBusinessHours } from '../lib/availability'
+import { checkDayAvailability, isTimeSlotAvailable, findNextAvailableSlots, getBusinessHours, normalizeTime } from '../lib/availability'
+import { createWhatsAppClient } from '../shared/whatsapp'
 
 type BotState = 
   | 'idle'                    // Estado inicial, esperando acción del usuario
@@ -36,15 +37,7 @@ class WhatsAppBot {
   private userSessions: Map<string, UserSession> = new Map()
 
   constructor() {
-    this.client = new Client({
-      authStrategy: new LocalAuth({
-        dataPath: '.wwebjs_auth'
-      }),
-      puppeteer: {
-        headless: true,
-        args: ['--no-sandbox', '--disable-setuid-sandbox']
-      }
-    })
+    this.client = createWhatsAppClient('.wwebjs_auth')
 
     this.patternMatcher = new PatternMatcher()
     this.setupEventHandlers()
@@ -225,36 +218,34 @@ class WhatsAppBot {
 
       // Si el usuario está en estado idle, procesar comandos normales
       if (session.state === 'idle') {
-        // Verificar si es una solicitud de cita usando el pattern matcher
-        if (this.patternMatcher.isAppointmentRequest(message.body)) {
-          await this.handleAppointmentRequest(message, phoneNumber)
+        if (lowerBody === 'hola' || lowerBody === 'hi' || lowerBody === 'inicio' || lowerBody.includes('buenos días') || lowerBody.includes('buenas tardes') || lowerBody.includes('buenas noches')) {
+          await this.sendWelcomeMessage(message, phoneNumber)
+        } else if (lowerBody === 'mis citas' || lowerBody === 'citas' || lowerBody.includes('mis citas')) {
+          await this.sendUserAppointments(message, phoneNumber)
           await this.clearSession(phoneNumber)
-          return
-        }
-
-        // Comandos del bot
-        if (lowerBody !== 'hola' && lowerBody !== 'hi' && !lowerBody.includes('buenos días') && !lowerBody.includes('buenas tardes') && !lowerBody.includes('buenas noches')) {
+        } else if (this.matchesCommandIntent(lowerBody, ['cancelar', 'cancelar cita', 'cancelar una cita', 'quiero cancelar', 'necesito cancelar'])) {
+          await this.handleCancelAppointment(message, phoneNumber)
+        } else if (this.matchesCommandIntent(lowerBody, ['reagendar', 'reagendar cita', 'reprogramar', 'reprogramar cita', 'quiero reagendar', 'quiero reprogramar'])) {
+          await this.handleReagendarAppointment(message, phoneNumber)
+        } else if (this.matchesCommandIntent(lowerBody, ['confirmar', 'confirmar cita', 'confirmar asistencia', 'quiero confirmar'])) {
+          await this.handleConfirmAppointment(message, phoneNumber)
+        } else if (lowerBody === 'ayuda' || lowerBody === 'help' || lowerBody.includes('ayuda') || lowerBody.includes('comandos')) {
+          await this.sendHelpMessage(message)
+          await this.clearSession(phoneNumber)
+        } else if (this.patternMatcher.isAppointmentRequest(message.body)) {
+          await this.handleAppointmentRequest(message, phoneNumber)
+          if (this.userSessions.get(phoneNumber)?.state !== 'selecting_available_slot') {
+            await this.clearSession(phoneNumber)
+          }
+        } else if (lowerBody !== 'hola' && lowerBody !== 'hi' && !lowerBody.includes('buenos días') && !lowerBody.includes('buenas tardes') && !lowerBody.includes('buenas noches')) {
           const customResponse = await this.patternMatcher.getResponse(message.body)
           if (customResponse) {
             await message.reply(customResponse)
             await this.clearSession(phoneNumber)
             return
           }
-        }
 
-        if (lowerBody === 'hola' || lowerBody === 'hi' || lowerBody === 'inicio' || lowerBody.includes('buenos días') || lowerBody.includes('buenas tardes') || lowerBody.includes('buenas noches')) {
-          await this.sendWelcomeMessage(message, phoneNumber)
-        } else if (lowerBody === 'mis citas' || lowerBody === 'citas' || lowerBody.includes('mis citas')) {
-          await this.sendUserAppointments(message, phoneNumber)
-          await this.clearSession(phoneNumber)
-        } else if (lowerBody === 'cancelar' || lowerBody.includes('cancelar')) {
-          await this.handleCancelAppointment(message, phoneNumber)
-        } else if (lowerBody === 'reagendar' || lowerBody.includes('reagendar') || lowerBody.includes('reprogramar')) {
-          await this.handleReagendarAppointment(message, phoneNumber)
-        } else if (lowerBody === 'confirmar' || lowerBody.includes('confirmar')) {
-          await this.handleConfirmAppointment(message, phoneNumber)
-        } else if (lowerBody === 'ayuda' || lowerBody === 'help' || lowerBody.includes('ayuda') || lowerBody.includes('comandos')) {
-          await this.sendHelpMessage(message)
+          await this.sendDefaultResponse(message)
           await this.clearSession(phoneNumber)
         } else {
           await this.sendDefaultResponse(message)
@@ -281,6 +272,11 @@ class WhatsAppBot {
       }
     }
     return null
+  }
+
+  private matchesCommandIntent(text: string, commands: string[]): boolean {
+    const normalized = text.trim().replace(/\s+/g, ' ')
+    return commands.some(command => normalized === command || normalized.startsWith(`${command} `))
   }
 
   private async handleNumberSelection(message: Message, phoneNumber: string, number: number, session: UserSession) {
@@ -393,6 +389,9 @@ class WhatsAppBot {
     if (parsedDate || parsedTime || datePattern || timePattern) {
       console.log(`[DEBUG] Procesando solicitud de cita desde handleDateTimeInput`)
       await this.handleAppointmentRequest(message, phoneNumber)
+      if (this.userSessions.get(phoneNumber)?.state === 'selecting_available_slot') {
+        return
+      }
       await this.clearSession(phoneNumber)
       // Mostrar menú principal después de agendar
       await this.sendWelcomeMessage(message, phoneNumber)
@@ -502,9 +501,11 @@ class WhatsAppBot {
     const parsedTime = this.patternMatcher.parseTime(body)
     
     if (parsedDate || parsedTime) {
-      await this.handleReagendarWithNewDate(message, phoneNumber, selectedAppointment, parsedDate, parsedTime)
-      await this.clearSession(phoneNumber)
-      await this.sendWelcomeMessage(message, phoneNumber)
+      const wasRescheduled = await this.handleReagendarWithNewDate(message, phoneNumber, selectedAppointment, parsedDate, parsedTime)
+      if (wasRescheduled) {
+        await this.clearSession(phoneNumber)
+        await this.sendWelcomeMessage(message, phoneNumber)
+      }
     } else {
       await message.reply(
         '❌ No pude entender la nueva fecha y hora. Por favor, proporciona la información en uno de estos formatos:\n\n' +
@@ -657,6 +658,12 @@ class WhatsAppBot {
 
     let appointmentDate: Date = parsedDate.date
     let appointmentTime: string = parsedTime?.time || '10:00'
+    const normalizedAppointmentTime = normalizeTime(appointmentTime)
+    if (!normalizedAppointmentTime) {
+      await message.reply('❌ No pude entender la hora. Por favor, usa un formato como *10:00* o *14:30*.')
+      return
+    }
+    appointmentTime = normalizedAppointmentTime
     
     console.log(`[DEBUG] Fecha final: ${appointmentDate.toISOString()}, Hora final: ${appointmentTime}`)
 
@@ -1042,7 +1049,7 @@ class WhatsAppBot {
     oldAppointment: any,
     parsedDate: any,
     parsedTime: any
-  ) {
+  ): Promise<boolean> {
     if (!parsedDate) {
       await message.reply(
         '❌ No pude entender la fecha. Por favor, proporciona la fecha en uno de estos formatos:\n' +
@@ -1052,18 +1059,24 @@ class WhatsAppBot {
         '• lunes\n\n' +
         'Ejemplo: *15/01/2024 10:00*'
       )
-      return
+      return false
     }
 
     let newDate: Date = parsedDate.date
     let newTime: string = parsedTime?.time || oldAppointment.time
+    const normalizedNewTime = normalizeTime(newTime)
+    if (!normalizedNewTime) {
+      await message.reply('❌ No pude entender la hora. Por favor, usa un formato como *10:00* o *14:30*.')
+      return false
+    }
+    newTime = normalizedNewTime
 
     try {
       // Validar que la fecha no sea en el pasado
       const now = new Date()
       if (isBefore(newDate, now)) {
         await message.reply('❌ No puedes reagendar una cita al pasado. Por favor, elige una fecha futura.')
-        return
+        return false
       }
 
       // Obtener horarios de atención configurados
@@ -1079,11 +1092,13 @@ class WhatsAppBot {
       
       if (timeMinutes < startMinutes || timeMinutes >= endMinutes) {
         await message.reply(`❌ El horario de atención es de ${businessHours.startTime} a ${businessHours.endTime} horas.`)
-        return
+        return false
       }
 
       // Verificar disponibilidad (excluyendo la cita actual)
-      const isAvailable = await isTimeSlotAvailable(newDate, newTime)
+      const isAvailable = await isTimeSlotAvailable(newDate, newTime, {
+        excludeAppointmentId: oldAppointment.id
+      })
       
       if (!isAvailable) {
         // Verificar si es día no laborable
@@ -1098,14 +1113,20 @@ class WhatsAppBot {
             `❌ Lo siento, ese día no es laborable.\n` +
             `Por favor, elige otro día disponible.`
           )
-          return
+          return false
         }
         
         // Verificar si el horario está ocupado
-        const existingAppointment = await prisma.appointment.findFirst({
+        const dayStart = new Date(newDate)
+        dayStart.setHours(0, 0, 0, 0)
+        const dayEnd = new Date(dayStart)
+        dayEnd.setDate(dayEnd.getDate() + 1)
+        const existingAppointments = await prisma.appointment.findMany({
           where: {
-            date: newDate,
-            time: newTime,
+            date: {
+              gte: dayStart,
+              lt: dayEnd
+            },
             status: {
               in: ['pending', 'confirmed']
             },
@@ -1114,13 +1135,16 @@ class WhatsAppBot {
             }
           }
         })
+        const existingAppointment = existingAppointments.find(appointment => {
+          return normalizeTime(appointment.time) === normalizedNewTime
+        })
         
         if (existingAppointment) {
           await message.reply(
             `❌ Lo siento, ese horario ya está ocupado.\n` +
             `Por favor, elige otro horario disponible.`
           )
-          return
+          return false
         }
         
         // Si no está ocupado pero no está disponible, puede ser por periodo de descanso
@@ -1128,7 +1152,7 @@ class WhatsAppBot {
           `❌ Lo siento, ese horario no está disponible (puede estar en un periodo de descanso).\n` +
           `Por favor, elige otro horario disponible.`
         )
-        return
+        return false
       }
 
       // Actualizar la cita
@@ -1150,6 +1174,8 @@ class WhatsAppBot {
         `Tu cita ha sido actualizada y está pendiente de confirmación.`
       )
 
+      return true
+
     } catch (error) {
       console.error('Error reagendando cita:', error)
       await message.reply(
@@ -1158,6 +1184,7 @@ class WhatsAppBot {
         '• Fecha: 15/01/2024, 15-01-2024, 15 de enero de 2024, mañana, lunes\n' +
         '• Hora: 10:00, 10:00 am, 10 horas'
       )
+      return false
     }
   }
 

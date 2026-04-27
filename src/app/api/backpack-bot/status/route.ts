@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { verifyToken } from '@/lib/auth'
-import { getBackpackBotInstance } from '@/bot/backpack-bot'
+import { getBackpackBotInstance } from '@/modules/backpack/bot'
 
 export async function GET(request: NextRequest) {
   try {

@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { verifyToken } from '@/lib/auth'
-import { getBotInstance } from '@/bot/whatsapp-bot'
+import { getBotInstance } from '@/modules/appointments/bot'
 
 export async function POST(request: NextRequest) {
   try {
