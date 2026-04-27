@@ -284,15 +284,15 @@ function stripLeadingEnglishReasoningBlocks(text: string): string {
 
 /** Un solo párrafo mezclando CoT en inglés y respuesta: quita oraciones iniciales de razonamiento. */
 function stripEnglishCoTFromSingleBlock(block: string): string {
-  if (!looksLikeEnglishReasoningParagraph(block)) {
-    return block.trim()
-  }
   const sentences = block
     .split(/(?<=[.!?])\s+/)
     .map((s) => s.trim())
     .filter(Boolean)
   if (sentences.length === 0) {
     return ''
+  }
+  if (!looksLikeEnglishReasoningParagraph(block) && !looksLikeEnglishReasoningSentence(sentences[0])) {
+    return block.trim()
   }
   let j = 0
   while (j < sentences.length && looksLikeEnglishReasoningSentence(sentences[j])) {
@@ -308,6 +308,9 @@ function looksLikeEnglishReasoningSentence(s: string): boolean {
     return true
   }
   if (/^let'?s see\b/i.test(t) && t.length < 100) {
+    return true
+  }
+  if (/^(the client sent|the user sent|the catalog(ue)? has|so the response should|looking at the photo)\b/i.test(t)) {
     return true
   }
   if (t.length < 22) {
