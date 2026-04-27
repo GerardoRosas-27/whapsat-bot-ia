@@ -150,3 +150,32 @@ model BackpackBotPolicy {
   createdAt           DateTime @default(now())
   updatedAt           DateTime @updatedAt
 }
+
+model BackpackAdminNumber {
+  id          String   @id @default(cuid())
+  phoneNumber String   @unique // Número WhatsApp autorizado para opciones administrativas
+  label       String?  // Nombre o referencia del administrador
+  isActive    Boolean  @default(true)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+}
+
+model BackpackSoldProductEntry {
+  id               String            @id @default(cuid())
+  adminPhoneNumber String
+  message          String
+  cashCutId        String?
+  cashCut          BackpackCashCut?  @relation(fields: [cashCutId], references: [id])
+  createdAt        DateTime          @default(now())
+  updatedAt        DateTime          @updatedAt
+}
+
+model BackpackCashCut {
+  id               String                     @id @default(cuid())
+  adminPhoneNumber String
+  entryCount       Int                        @default(0)
+  result           String
+  entries          BackpackSoldProductEntry[]
+  createdAt        DateTime                   @default(now())
+  updatedAt        DateTime                   @updatedAt
+}

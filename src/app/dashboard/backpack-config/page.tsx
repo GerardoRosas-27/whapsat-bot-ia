@@ -3,12 +3,13 @@
 import { useEffect, useState } from 'react'
 import { useRouter } from 'next/navigation'
 import {
+  BackpackAdminNumbersManager,
   BackpackBotPolicyManager,
   BackpackProductsManager,
   BotStatusBackpack
 } from '@/modules/backpack/ui'
 
-type BackpackTab = 'status' | 'rules' | 'products'
+type BackpackTab = 'status' | 'rules' | 'products' | 'admins'
 
 export default function BackpackConfigPage() {
   const router = useRouter()
@@ -135,7 +136,8 @@ export default function BackpackConfigPage() {
             [
               { id: 'status' as const, label: 'Estado del bot' },
               { id: 'rules' as const, label: 'Reglas e información' },
-              { id: 'products' as const, label: 'Productos' }
+              { id: 'products' as const, label: 'Productos' },
+              { id: 'admins' as const, label: 'Admins del bot' }
             ] as const
           ).map((tab) => (
             <button
@@ -162,6 +164,7 @@ export default function BackpackConfigPage() {
         {activeTab === 'status' && <BotStatusBackpack />}
         {activeTab === 'rules' && <BackpackBotPolicyManager />}
         {activeTab === 'products' && <BackpackProductsManager />}
+        {activeTab === 'admins' && <BackpackAdminNumbersManager />}
       </main>
     </div>
   )

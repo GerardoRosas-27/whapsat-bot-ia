@@ -4,6 +4,7 @@ import qrcode from 'qrcode-terminal'
 import { prisma } from '../lib/prisma'
 import { createWhatsAppClient } from '../shared/whatsapp'
 import {
+  backpackLlmChat,
   getLlmBaseUrl,
   getLlmModel,
   isBackpackLlmEnabled
@@ -21,7 +22,7 @@ import {
 /** URL pública de la app (para que WhatsApp pueda cargar imágenes). En producción define APP_PUBLIC_URL o NEXT_PUBLIC_APP_URL. */
 const APP_BASE_URL = process.env.APP_PUBLIC_URL || process.env.NEXT_PUBLIC_APP_URL || 'http://localhost:3000'
 
-type BackpackBotState = 'idle' | 'agent'
+type BackpackBotState = 'idle' | 'agent' | 'soldProducts'
 
 type LlmTurn = BackpackLlmHistoryTurn
 
@@ -83,6 +84,12 @@ Escribe *info* o *horarios* (envíos, mayoreo, modelos, etc.)
 Escribe *catálogo* o *novedades* para ver los 5 modelos más recientes.
 
 Responde con el número *(1 al 8)* o escribe tu descripción.`
+
+const ADMIN_MENU = `
+
+*Opciones admin:*
+9️⃣ Productos vendidos
+🔟 Corte de caja`
 
 const BACKPACK_POLICY_CACHE_MS = 45_000
 
@@ -232,6 +239,23 @@ class BackpackWhatsAppBot {
   private formatPrice(price: number | null | undefined): string {
     const n = price ?? 0
     return `$${Number(n).toFixed(2)}`
+  }
+
+  private normalizePhoneNumber(phoneNumber: string): string {
+    return phoneNumber.replace(/\D/g, '')
+  }
+
+  private async isAdminPhoneNumber(phoneNumber: string): Promise<boolean> {
+    const normalized = this.normalizePhoneNumber(phoneNumber)
+    if (!normalized) return false
+    const adminNumber = await prisma.backpackAdminNumber.findUnique({
+      where: { phoneNumber: normalized }
+    })
+    return Boolean(adminNumber?.isActive)
+  }
+
+  private buildWelcomeMenu(isAdmin: boolean): string {
+    return isAdmin ? `${WELCOME_MENU}${ADMIN_MENU}` : WELCOME_MENU
   }
 
   /** Política del negocio (reglas + datos al cliente), con caché breve para no saturar SQLite */
@@ -519,7 +543,7 @@ class BackpackWhatsAppBot {
     const match = text.match(/^(\d+)/)
     if (match) {
       const num = parseInt(match[1], 10)
-      if (num >= 1 && num <= 8) return num
+      if (num >= 1 && num <= 10) return num
     }
     return null
   }
@@ -610,10 +634,11 @@ class BackpackWhatsAppBot {
   }
 
   private async sendWelcomeMenu(message: Message, phoneNumber: string) {
+    const isAdmin = await this.isAdminPhoneNumber(phoneNumber)
     await this.updateSessionState(phoneNumber, 'idle', {
       agentHistory: []
     })
-    await message.reply(WELCOME_MENU)
+    await message.reply(this.buildWelcomeMenu(isAdmin))
   }
 
   /** Activa el modo "Agente IA" para este usuario (independiente de BACKPACK_LLM_ENABLED). */
@@ -629,6 +654,144 @@ class BackpackWhatsAppBot {
         'Puedes preguntarme en lenguaje natural sobre nuestras mochilas, precios, existencias, horarios, envíos, etc.\n\n' +
         '_Para regresar al menú principal escribe *menu* o *salir*._'
     )
+  }
+
+  private async enterSoldProductsMode(
+    message: Message,
+    phoneNumber: string
+  ): Promise<void> {
+    await this.updateSessionState(phoneNumber, 'soldProducts')
+    await message.reply(
+      '🧾 *Productos vendidos*\n\n' +
+        'Manda cada venta en un mensaje y la guardaré para el corte de caja.\n\n' +
+        'Ejemplos:\n' +
+        '- 1 set de pinzas de 20\n' +
+        '- mochila sapo de poliester de 180\n\n' +
+        '_Escribe *menu* para regresar o *corte* para hacer corte de caja._'
+    )
+  }
+
+  private async saveSoldProductEntry(
+    message: Message,
+    phoneNumber: string,
+    body: string
+  ): Promise<void> {
+    const saved = await prisma.backpackSoldProductEntry.create({
+      data: {
+        adminPhoneNumber: this.normalizePhoneNumber(phoneNumber),
+        message: body
+      }
+    })
+    await message.reply(
+      `✅ Venta guardada (#${saved.id.slice(-6)}).\n\n` +
+        'Manda otra venta o escribe *corte* para generar el corte de caja.'
+    )
+  }
+
+  private formatPendingSoldEntries(
+    entries: Awaited<ReturnType<typeof prisma.backpackSoldProductEntry.findMany>>
+  ): string {
+    return entries
+      .map((entry, index) => {
+        const date = entry.createdAt.toLocaleString('es-MX', {
+          dateStyle: 'short',
+          timeStyle: 'short'
+        })
+        return `${index + 1}. [${date}] ${entry.message}`
+      })
+      .join('\n')
+  }
+
+  private async createCashCut(message: Message, phoneNumber: string): Promise<void> {
+    const entries = await prisma.backpackSoldProductEntry.findMany({
+      where: { cashCutId: null },
+      orderBy: { createdAt: 'asc' }
+    })
+
+    if (entries.length === 0) {
+      await message.reply(
+        'No hay productos vendidos pendientes de corte.\n\n' +
+          '_Escribe *9* para capturar ventas o *hola* para ver el menú._'
+      )
+      return
+    }
+
+    const list = this.formatPendingSoldEntries(entries)
+    let result: string
+    try {
+      result = await backpackLlmChat({
+        temperature: 0.15,
+        maxTokens: 1400,
+        messages: [
+          {
+            role: 'system',
+            content:
+              'Eres un asistente de caja. Recibirás una lista de ventas escrita de forma libre. ' +
+              'Calcula el corte de caja usando solo los importes presentes en cada línea. ' +
+              'Si una línea incluye cantidad y precio unitario, multiplica. Si solo incluye un importe, úsalo como total de esa línea. ' +
+              'Responde en español, breve, con: desglose por línea, subtotal/total y observaciones de líneas ambiguas.'
+          },
+          {
+            role: 'user',
+            content:
+              `Genera el corte de caja de estas ${entries.length} ventas pendientes:\n\n${list}`
+          }
+        ]
+      })
+    } catch (err) {
+      console.error('[BackpackBot] Error generando corte de caja con LLM:', err)
+      await message.reply(
+        '⚠️ No pude conectar con LM Studio para calcular el corte. Las ventas siguen pendientes.'
+      )
+      return
+    }
+
+    if (result.length > BackpackWhatsAppBot.WHATSAPP_REPLY_MAX - 120) {
+      result = result.slice(0, BackpackWhatsAppBot.WHATSAPP_REPLY_MAX - 140) + '\n…'
+    }
+
+    const cashCut = await prisma.$transaction(async (tx) => {
+      const created = await tx.backpackCashCut.create({
+        data: {
+          adminPhoneNumber: this.normalizePhoneNumber(phoneNumber),
+          entryCount: entries.length,
+          result
+        }
+      })
+      await tx.backpackSoldProductEntry.updateMany({
+        where: { id: { in: entries.map(entry => entry.id) } },
+        data: { cashCutId: created.id }
+      })
+      return created
+    })
+
+    await message.reply(
+      `💵 *Corte de caja*\n\n${result}\n\n` +
+        `Ventas incluidas: ${entries.length}\nFolio: ${cashCut.id.slice(-8)}`
+    )
+    await this.updateSessionState(phoneNumber, 'idle')
+  }
+
+  private async handleSoldProductsTurn(
+    message: Message,
+    phoneNumber: string,
+    body: string,
+    lowerBody: string
+  ): Promise<void> {
+    const trimmed = lowerBody.trim()
+    if (trimmed && AGENT_EXIT_COMMANDS.has(trimmed)) {
+      await this.sendWelcomeMenu(message, phoneNumber)
+      return
+    }
+    if (trimmed === 'corte' || trimmed === 'corte de caja' || trimmed === '10') {
+      await this.createCashCut(message, phoneNumber)
+      return
+    }
+    if (!body.trim()) {
+      await message.reply('Manda el producto vendido o escribe *menu* para regresar.')
+      return
+    }
+    await this.saveSoldProductEntry(message, phoneNumber, body)
   }
 
   /** Detecta si el mensaje trae imagen o sticker (aunque hasMedia aún no esté listo). */
@@ -843,6 +1006,17 @@ class BackpackWhatsAppBot {
 
     try {
       const session = await this.getSession(phoneNumber)
+      const isAdmin = await this.isAdminPhoneNumber(phoneNumber)
+
+      if (session.state === 'soldProducts') {
+        if (!isAdmin) {
+          await this.updateSessionState(phoneNumber, 'idle')
+          await message.reply('Tu número ya no tiene permisos admin. Te regreso al menú principal.')
+          return
+        }
+        await this.handleSoldProductsTurn(message, phoneNumber, body, lowerBody)
+        return
+      }
 
       // Si el usuario eligió previamente "Agente IA", cada mensaje va al LLM
       // (independiente de BACKPACK_LLM_ENABLED). El resto del flujo clásico queda intacto.
@@ -885,12 +1059,34 @@ class BackpackWhatsAppBot {
         return
       }
 
-      // Opción de menú por número (1-8)
+      if (isAdmin && (lowerBody === 'productos vendidos' || lowerBody === 'ventas')) {
+        await this.enterSoldProductsMode(message, phoneNumber)
+        return
+      }
+
+      if (isAdmin && (lowerBody === 'corte' || lowerBody === 'corte de caja')) {
+        await this.createCashCut(message, phoneNumber)
+        return
+      }
+
+      // Opción de menú por número (1-10; 9 y 10 solo para admins)
       const menuNum = this.parseMenuNumber(body)
       if (menuNum !== null) {
         // Opción 8: entrar al Agente IA (no depende de BACKPACK_LLM_ENABLED)
         if (menuNum === 8) {
           await this.enterAgentMode(message, phoneNumber)
+          return
+        }
+        if (menuNum === 9 || menuNum === 10) {
+          if (!isAdmin) {
+            await message.reply('Esa opción solo está disponible para números admin.')
+            return
+          }
+          if (menuNum === 9) {
+            await this.enterSoldProductsMode(message, phoneNumber)
+            return
+          }
+          await this.createCashCut(message, phoneNumber)
           return
         }
         let products: Awaited<ReturnType<typeof prisma.backpackProduct.findMany>>
