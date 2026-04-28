@@ -20,6 +20,26 @@ export type BackpackAgentPolicySlice = {
   customerFacts: string
 }
 
+type AgentScope = 'product' | 'business' | 'mixed' | 'out_of_scope' | 'unknown'
+
+type GroundedAgentContext = {
+  scope: AgentScope
+  products: BackpackProduct[]
+  businessFacts: string
+  fallbackReply?: string
+  searchSummary: string
+}
+
+const MAX_RETRIEVED_PRODUCTS = 8
+const OUT_OF_SCOPE_FALLBACK =
+  'Solo te puedo ayudar con información de nuestras mochilas y la tienda. ¿Qué modelo buscas?'
+const UNKNOWN_PRODUCT_FALLBACK =
+  'No encontré ese modelo en nuestro catálogo. Escribe *hola* para ver opciones disponibles.'
+const UNKNOWN_BUSINESS_FACT_FALLBACK =
+  'No tengo ese dato confirmado. Puedes escribir *hola* para volver al menú o contactar directo a la tienda.'
+const MALFORMED_REPLY_FALLBACK =
+  'Disculpa, no pude preparar bien la respuesta. ¿Me escribes de nuevo qué mochila buscas?'
+
 const DEFAULT_AGENT_CONTEXT = `# Rol
 
 Eres el asistente virtual de WhatsApp de Mochilas y Novedades Kira.
@@ -64,6 +84,7 @@ export function buildBackpackAgentSystemPrompt(parts: {
   contextFile: string
   customerFacts: string
   catalogText: string
+  retrievedContext: string
 }): string {
   const facts =
     parts.customerFacts.trim() ||
@@ -77,10 +98,24 @@ ${facts}
 
 ---
 
-## Catálogo (única fuente de productos, precios y existencias)
+## Contexto recuperado para ESTA pregunta (prioridad máxima)
+Usa primero este bloque. Si aquí dice que no hubo coincidencias o que no hay dato oficial, no inventes una respuesta.
+${parts.retrievedContext}
+
+---
+
+## Catálogo completo (fuente secundaria, solo si el contexto recuperado lo permite)
 ${parts.catalogText}
 
 ---
+
+## Reglas de alineamiento obligatorias
+- Responde solo sobre venta de mochilas o datos oficiales de la tienda.
+- Si el cliente pide un producto, solo afirma disponibilidad/precio/stock de productos presentes en el contexto recuperado o catálogo.
+- Si no hay coincidencia, di que no lo encontraste y ofrece escribir *hola* para ver opciones. No propongas modelos inventados.
+- Si pide ubicación, horario, envíos, mayoreo o políticas, usa solo "Información oficial del negocio".
+- Respuesta breve: máximo 6 líneas, idealmente 1 a 4.
+- Nada de código, JSON, Markdown de bloque, etiquetas, razonamiento interno ni texto en inglés.
 
 Recordatorio final: responde SOLO con el mensaje para el cliente. Nada de razonamiento, nada de etiquetas, nada en inglés.`
 }
@@ -88,6 +123,11 @@ Recordatorio final: responde SOLO con el mensaje para el cliente. Nada de razona
 /** Quita cualquier residuo de razonamiento que haya esquivado el sanitizador base. */
 function finalCleanup(reply: string): string {
   let t = reply.trim()
+  t = t
+    .replace(/^```[a-z0-9_-]*\s*/i, '')
+    .replace(/```$/i, '')
+    .replace(/^\s*(respuesta|mensaje final|assistant|asistente)\s*:\s*/i, '')
+    .trim()
   const openThink = /<(think|thinking|reasoning|redacted_thinking)>/i
   const m = openThink.exec(t)
   if (m && m.index === 0) {
@@ -97,7 +137,383 @@ function finalCleanup(reply: string): string {
       t = t.slice(close.index + close[0].length).trim()
     }
   }
-  return t
+  return limitReplyLines(t)
+}
+
+function limitReplyLines(reply: string): string {
+  const lines = reply
+    .split('\n')
+    .map((line) => line.trim())
+    .filter(Boolean)
+  if (lines.length <= 6) return lines.join('\n').trim()
+  return lines.slice(0, 6).join('\n').trim()
+}
+
+function normalizeText(value: string): string {
+  return value
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toLowerCase()
+    .replace(/[^a-z0-9$.\s]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+}
+
+const STOP_WORDS = new Set([
+  'hola',
+  'buenos',
+  'buenas',
+  'tardes',
+  'dias',
+  'noches',
+  'quiero',
+  'quisiera',
+  'busco',
+  'buscando',
+  'tienen',
+  'tiene',
+  'hay',
+  'me',
+  'puedes',
+  'puede',
+  'dar',
+  'decir',
+  'mostrar',
+  'muestras',
+  'ver',
+  'para',
+  'con',
+  'sin',
+  'que',
+  'cual',
+  'cuanto',
+  'cuesta',
+  'precio',
+  'stock',
+  'disponible',
+  'disponibles',
+  'mochila',
+  'mochilas',
+  'bolsa',
+  'bolsas',
+  'modelo',
+  'modelos',
+  'color',
+  'colores'
+])
+
+const PRODUCT_TERMS = [
+  'mochila',
+  'mochilas',
+  'morral',
+  'bolsa',
+  'bolsas',
+  'escolar',
+  'escuela',
+  'clases',
+  'trabajo',
+  'oficina',
+  'laptop',
+  'hombre',
+  'mujer',
+  'dama',
+  'caballero',
+  'unisex',
+  'precio',
+  'stock',
+  'existencia',
+  'disponible',
+  'catalogo',
+  'modelo'
+]
+
+const BUSINESS_TERMS = [
+  'ubicacion',
+  'direccion',
+  'donde',
+  'local',
+  'plaza',
+  'horario',
+  'hora',
+  'abren',
+  'cierran',
+  'cerrado',
+  'abierto',
+  'envio',
+  'envios',
+  'mayoreo',
+  'pago',
+  'pagos',
+  'contacto',
+  'telefono',
+  'tienda'
+]
+
+const OUT_OF_SCOPE_TERMS = [
+  'clima',
+  'receta',
+  'programacion',
+  'codigo',
+  'javascript',
+  'python',
+  'politica',
+  'futbol',
+  'tarea',
+  'medico',
+  'legal',
+  'chiste',
+  'noticias'
+]
+
+function extractSearchTerms(text: string): string[] {
+  const normalized = normalizeText(text)
+  const terms = normalized
+    .split(' ')
+    .filter((term) => term.length >= 3 && !STOP_WORDS.has(term))
+    .flatMap((term) => {
+      const variants = [term]
+      if (term.endsWith('es') && term.length > 5) variants.push(term.slice(0, -2))
+      if (term.endsWith('s') && term.length > 4) variants.push(term.slice(0, -1))
+      return variants
+    })
+  return [...new Set(terms)]
+}
+
+function hasAnyTerm(normalizedText: string, terms: string[]): boolean {
+  return terms.some((term) => normalizedText.includes(term))
+}
+
+function inferScope(userText: string): AgentScope {
+  const normalized = normalizeText(userText)
+  const productIntent = hasAnyTerm(normalized, PRODUCT_TERMS)
+  const businessIntent = hasAnyTerm(normalized, BUSINESS_TERMS)
+  const outOfScopeIntent = hasAnyTerm(normalized, OUT_OF_SCOPE_TERMS)
+
+  if (!productIntent && !businessIntent && outOfScopeIntent) return 'out_of_scope'
+  if (productIntent && businessIntent) return 'mixed'
+  if (productIntent) return 'product'
+  if (businessIntent) return 'business'
+  return 'unknown'
+}
+
+function productSearchText(product: BackpackProduct): string {
+  const useType =
+    product.useType === 'school'
+      ? 'escolar escuela clases'
+      : product.useType === 'work'
+        ? 'trabajo oficina laptop'
+        : product.useType
+  const gender =
+    product.gender === 'woman'
+      ? 'mujer dama femenina'
+      : product.gender === 'man'
+        ? 'hombre caballero masculino'
+        : product.gender
+  return normalizeText(
+    `${product.name} ${product.description} ${useType} ${gender} ${product.price} ${product.stock}`
+  )
+}
+
+function scoreProduct(product: BackpackProduct, terms: string[], userText: string): number {
+  const normalizedName = normalizeText(product.name)
+  const normalizedDescription = normalizeText(product.description)
+  const normalizedProduct = productSearchText(product)
+  const normalizedUser = normalizeText(userText)
+  let score = 0
+
+  if (normalizedName && normalizedUser.includes(normalizedName)) score += 12
+  for (const term of terms) {
+    if (normalizedName.includes(term)) score += 5
+    if (normalizedDescription.includes(term)) score += 3
+    if (normalizedProduct.includes(term)) score += 2
+  }
+  if (/\b(escuela|escolar|escolares|clases|secundaria|prepa|universidad)\b/.test(normalizedUser) && product.useType === 'school') {
+    score += 4
+  }
+  if (/\b(trabajo|oficina|laptop)\b/.test(normalizedUser) && product.useType === 'work') {
+    score += 4
+  }
+  if (/\b(mujer|dama|femenina|nina)\b/.test(normalizedUser) && product.gender === 'woman') {
+    score += 4
+  }
+  if (/\b(hombre|caballero|masculino|nino)\b/.test(normalizedUser) && product.gender === 'man') {
+    score += 4
+  }
+  if (/\bunisex\b/.test(normalizedUser) && product.gender === 'unisex') {
+    score += 4
+  }
+
+  return score
+}
+
+function retrieveProducts(userText: string, products: BackpackProduct[]): BackpackProduct[] {
+  const terms = extractSearchTerms(userText)
+  if (terms.length === 0) {
+    return products.slice(0, MAX_RETRIEVED_PRODUCTS)
+  }
+
+  return products
+    .map((product) => ({
+      product,
+      score: scoreProduct(product, terms, userText)
+    }))
+    .filter((row) => row.score > 0)
+    .sort((a, b) => b.score - a.score || a.product.name.localeCompare(b.product.name))
+    .slice(0, MAX_RETRIEVED_PRODUCTS)
+    .map((row) => row.product)
+}
+
+function isSpecificProductSearch(userText: string): boolean {
+  const terms = extractSearchTerms(userText)
+  if (terms.length > 0) return true
+  return /\b(roja|rojo|azul|negra|negro|rosa|verde|morada|morado|grande|chica|chico|laptop)\b/i.test(
+    normalizeText(userText)
+  )
+}
+
+function selectRelevantBusinessFacts(userText: string, customerFacts: string): string {
+  const facts = customerFacts.trim()
+  if (!facts) return ''
+
+  const normalizedUser = normalizeText(userText)
+  const lines = facts
+    .split('\n')
+    .map((line) => line.trim())
+    .filter(Boolean)
+
+  if (lines.length <= 12) return facts
+
+  const relevant = lines.filter((line) => {
+    const normalizedLine = normalizeText(line)
+    return BUSINESS_TERMS.some(
+      (term) => normalizedUser.includes(term) && normalizedLine.includes(term)
+    )
+  })
+
+  return relevant.length > 0 ? relevant.join('\n') : facts
+}
+
+function formatProductsForGrounding(products: BackpackProduct[]): string {
+  if (products.length === 0) return '(No se recuperaron productos relevantes.)'
+  return products
+    .map(
+      (p, index) =>
+        `${index + 1}. *${p.name}* | precio:$${Number(p.price).toFixed(2)} | stock:${p.stock} | género:${p.gender} | uso:${p.useType}\n   ${p.description}`
+    )
+    .join('\n')
+}
+
+function buildGroundingContext(input: {
+  userText: string
+  customerFacts: string
+  products: BackpackProduct[]
+}): GroundedAgentContext {
+  const scope = inferScope(input.userText)
+  if (scope === 'out_of_scope') {
+    return {
+      scope,
+      products: [],
+      businessFacts: '',
+      fallbackReply: OUT_OF_SCOPE_FALLBACK,
+      searchSummary: 'La pregunta está fuera del alcance de venta de mochilas/tienda.'
+    }
+  }
+
+  const needsProducts = scope === 'product' || scope === 'mixed' || scope === 'unknown'
+  const needsBusinessFacts = scope === 'business' || scope === 'mixed'
+  const products = needsProducts ? retrieveProducts(input.userText, input.products) : []
+  const businessFacts = needsBusinessFacts
+    ? selectRelevantBusinessFacts(input.userText, input.customerFacts)
+    : ''
+
+  if ((scope === 'product' || scope === 'mixed') && products.length === 0 && isSpecificProductSearch(input.userText)) {
+    return {
+      scope,
+      products,
+      businessFacts,
+      fallbackReply: UNKNOWN_PRODUCT_FALLBACK,
+      searchSummary: 'No hubo coincidencias de producto en el catálogo activo.'
+    }
+  }
+
+  if ((scope === 'business' || scope === 'mixed') && !businessFacts.trim()) {
+    return {
+      scope,
+      products,
+      businessFacts,
+      fallbackReply: UNKNOWN_BUSINESS_FACT_FALLBACK,
+      searchSummary: 'No hay información oficial del negocio para responder ese dato.'
+    }
+  }
+
+  return {
+    scope,
+    products,
+    businessFacts,
+    searchSummary:
+      products.length > 0
+        ? `Se recuperaron ${products.length} producto(s) relevante(s).`
+        : 'No se recuperaron productos; responder solo con datos oficiales si aplica.'
+  }
+}
+
+function formatGroundedContext(ctx: GroundedAgentContext): string {
+  return `Estado de búsqueda: ${ctx.searchSummary}
+Alcance detectado: ${ctx.scope}
+
+Productos relevantes:
+${formatProductsForGrounding(ctx.products)}
+
+Datos oficiales relevantes:
+${ctx.businessFacts.trim() || '(No aplica o no hay datos oficiales relevantes para esta pregunta.)'}
+
+Respuesta segura si falta información:
+${ctx.fallbackReply || 'Si la respuesta no está respaldada por los bloques anteriores, di que no tienes ese dato confirmado.'}`
+}
+
+function looksLikeCodeOrInternalOutput(reply: string): boolean {
+  const t = reply.trim()
+  if (!t) return true
+  return (
+    /```/.test(t) ||
+    /^\s*[{[]/.test(t) ||
+    /\b(role|system|assistant|user)\s*:/i.test(t) ||
+    /\b(const|let|function|return|console\.log|import|export|class)\b/.test(t) ||
+    /<\/?(think|thinking|reasoning|redacted_thinking|json|code)>/i.test(t) ||
+    /\b(response|message|answer)\s*:/i.test(t)
+  )
+}
+
+function extractPrices(reply: string): string[] {
+  return (reply.match(/\$\s*\d+(?:[.,]\d{1,2})?/g) ?? []).map((price) =>
+    price.replace(/\s+/g, '').replace(',', '.')
+  )
+}
+
+function validateGroundedReply(reply: string, ctx: GroundedAgentContext): string {
+  if (looksLikeCodeOrInternalOutput(reply)) {
+    return MALFORMED_REPLY_FALLBACK
+  }
+
+  if (ctx.fallbackReply) {
+    return ctx.fallbackReply
+  }
+
+  const prices = extractPrices(reply)
+  if (prices.length > 0 && ctx.products.length > 0) {
+    const allowedPrices = new Set(
+      ctx.products.flatMap((p) => {
+        const amount = Number(p.price)
+        return [`$${amount.toFixed(2)}`, `$${amount.toFixed(0)}`]
+      })
+    )
+    const hasUnsupportedPrice = prices.some((price) => !allowedPrices.has(price))
+    if (hasUnsupportedPrice) {
+      return UNKNOWN_PRODUCT_FALLBACK
+    }
+  }
+
+  return reply
 }
 
 /** Un turno del asistente IA (solo texto, sin visión). */
@@ -110,11 +526,24 @@ export async function runBackpackAgentTurn(input: {
 }): Promise<string> {
   const catalogText = formatCatalogForPrompt(input.products)
   const contextFile = loadBackpackAgentContext()
+  const userText =
+    input.userText.trim() ||
+    '(El cliente envió un mensaje vacío. Pide amablemente que escriba su pregunta sobre mochilas.)'
+  const groundedContext = buildGroundingContext({
+    userText,
+    customerFacts: input.policy.customerFacts,
+    products: input.products
+  })
+
+  if (groundedContext.fallbackReply) {
+    return groundedContext.fallbackReply
+  }
 
   const systemPrompt = buildBackpackAgentSystemPrompt({
     contextFile,
     customerFacts: input.policy.customerFacts,
-    catalogText
+    catalogText,
+    retrievedContext: formatGroundedContext(groundedContext)
   })
 
   const historyMessages: LlmMessage[] = input.history.map((t) => ({
@@ -122,25 +551,27 @@ export async function runBackpackAgentTurn(input: {
     content: t.content
   }))
 
-  const userText =
-    input.userText.trim() ||
-    '(El cliente envió un mensaje vacío. Pide amablemente que escriba su pregunta sobre mochilas.)'
-
   const messages: LlmMessage[] = [
     { role: 'system', content: systemPrompt },
     ...historyMessages,
     {
       role: 'user',
-      content: `Cliente: ${userText}\n\nResponde SOLO con el texto para WhatsApp, sin preámbulos ni razonamiento.`
+      content: `Cliente: ${userText}
+
+Contexto recuperado:
+${formatGroundedContext(groundedContext)}
+
+Responde SOLO con el texto para WhatsApp, sin preámbulos, sin código y sin razonamiento.`
     }
   ]
 
   let reply = await backpackLlmChat({
     messages,
-    temperature: input.temperature ?? 0.35,
+    temperature: input.temperature ?? 0.2,
     maxTokens: getLlmMaxResponseTokens()
   })
   reply = sanitizeLlmReplyForCustomer(reply)
   reply = finalCleanup(reply)
+  reply = validateGroundedReply(reply, groundedContext)
   return reply
 }

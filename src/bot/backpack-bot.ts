@@ -954,7 +954,7 @@ class BackpackWhatsAppBot {
         policy: { customerFacts: policy.customerFacts },
         products,
         history: prevHistory,
-        temperature: 0.35
+        temperature: 0.2
       })
     } catch (err) {
       console.error('[BackpackBot] Agente IA no disponible:', err)
