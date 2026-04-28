@@ -35,6 +35,7 @@ export async function GET(request: NextRequest) {
         startTime: '08:00',
         endTime: '18:00',
         appointmentDuration: 60,
+        minCancellationNoticeHours: 1,
         isActive: true,
         restPeriods: [],
         nonWorkingDays: []
@@ -68,6 +69,7 @@ export async function POST(request: NextRequest) {
       startTime,
       endTime,
       appointmentDuration,
+      minCancellationNoticeHours,
       restPeriods,
       nonWorkingDays
     } = body
@@ -92,6 +94,7 @@ export async function POST(request: NextRequest) {
         startTime,
         endTime,
         appointmentDuration: parseInt(appointmentDuration),
+        minCancellationNoticeHours: Math.max(0, parseInt(minCancellationNoticeHours ?? '1', 10) || 1),
         isActive: true,
         restPeriods: {
           create: (restPeriods || []).map((rp: any) => ({

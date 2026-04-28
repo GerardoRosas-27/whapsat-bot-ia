@@ -3,6 +3,7 @@
 import { useEffect, useState } from 'react'
 import { useRouter } from 'next/navigation'
 import {
+  AppointmentAdminNumbersManager,
   BotDateFormatsManager,
   BotPatternsManager,
   BotResponsesManager,
@@ -12,7 +13,7 @@ import {
 
 export default function BotConfigPage() {
   const router = useRouter()
-  const [activeTab, setActiveTab] = useState<'patterns' | 'dates' | 'times' | 'responses' | 'hours'>('patterns')
+  const [activeTab, setActiveTab] = useState<'patterns' | 'dates' | 'times' | 'responses' | 'hours' | 'admins'>('patterns')
   const [isAdmin, setIsAdmin] = useState(false)
   const [loading, setLoading] = useState(true)
 
@@ -217,6 +218,22 @@ export default function BotConfigPage() {
           >
             ⏰ Horarios de Atención
           </button>
+          <button
+            onClick={() => setActiveTab('admins')}
+            style={{
+              padding: '12px 24px',
+              background: activeTab === 'admins' ? '#667eea' : 'transparent',
+              color: activeTab === 'admins' ? 'white' : '#333',
+              border: 'none',
+              borderRadius: '6px',
+              cursor: 'pointer',
+              fontSize: '14px',
+              fontWeight: '600',
+              transition: 'all 0.2s'
+            }}
+          >
+            👤 Admins del Bot
+          </button>
         </div>
 
         {/* Content */}
@@ -226,6 +243,7 @@ export default function BotConfigPage() {
           {activeTab === 'times' && <BotTimeFormatsManager />}
           {activeTab === 'responses' && <BotResponsesManager />}
           {activeTab === 'hours' && <BusinessHoursManager />}
+          {activeTab === 'admins' && <AppointmentAdminNumbersManager />}
         </div>
       </main>
     </div>

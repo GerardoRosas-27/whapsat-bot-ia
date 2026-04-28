@@ -22,6 +22,7 @@ interface BusinessHours {
   startTime: string
   endTime: string
   appointmentDuration: number
+  minCancellationNoticeHours: number
   isActive: boolean
   restPeriods?: RestPeriod[]
   nonWorkingDays?: NonWorkingDay[]
@@ -32,6 +33,7 @@ export default function BusinessHoursManager() {
     startTime: '08:00',
     endTime: '18:00',
     appointmentDuration: 60,
+    minCancellationNoticeHours: 1,
     isActive: true,
     restPeriods: [],
     nonWorkingDays: []
@@ -59,6 +61,7 @@ export default function BusinessHoursManager() {
         const data = await response.json()
         setHours({
           ...data,
+          minCancellationNoticeHours: data.minCancellationNoticeHours ?? 1,
           restPeriods: data.restPeriods || [],
           nonWorkingDays: data.nonWorkingDays || []
         })
@@ -238,6 +241,30 @@ export default function BusinessHoursManager() {
           />
           <p style={{ marginTop: '4px', fontSize: '12px', color: '#666' }}>
             Duración de cada cita en minutos (15, 30, 45, 60, etc.)
+          </p>
+        </div>
+
+        <div style={{ marginTop: '20px' }}>
+          <label style={{ display: 'block', marginBottom: '8px', fontWeight: '500' }}>
+            Anticipación mínima para cancelar/reagendar (horas)
+          </label>
+          <input
+            type="number"
+            min="0"
+            step="1"
+            value={hours.minCancellationNoticeHours}
+            onChange={(e) => setHours({ ...hours, minCancellationNoticeHours: Math.max(0, parseInt(e.target.value, 10) || 0) })}
+            style={{
+              width: '100%',
+              padding: '8px',
+              border: '1px solid #ddd',
+              borderRadius: '4px',
+              fontSize: '14px',
+              maxWidth: '200px'
+            }}
+          />
+          <p style={{ marginTop: '4px', fontSize: '12px', color: '#666' }}>
+            Aplica para cancelaciones/reagendas de pacientes y para la opción admin de cancelar próxima cita.
           </p>
         </div>
       </div>

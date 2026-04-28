@@ -9,12 +9,18 @@ import { createWhatsAppClient } from '../shared/whatsapp'
 
 type BotState = 
   | 'idle'                    // Estado inicial, esperando acción del usuario
+  | 'waiting_for_patient_name' // Esperando nombre antes de agendar o lista de espera
+  | 'waiting_for_reason'       // Esperando motivo de consulta
   | 'waiting_for_date_time'   // Esperando fecha y hora para agendar
+  | 'waiting_for_available_date' // Esperando fecha para consultar horarios libres
   | 'selecting_available_slot' // Esperando que el usuario elija entre opciones de citas disponibles
   | 'canceling_appointment'   // Esperando número de cita a cancelar
+  | 'confirming_cancel_appointment' // Confirmación doble de cancelación
   | 'reagending_appointment'  // Esperando número de cita a reagendar
   | 'reagending_new_date'     // Esperando nueva fecha/hora para reagendar
   | 'confirming_appointment'   // Esperando número de cita a confirmar
+  | 'completing_appointment'   // Esperando número de cita a completar
+  | 'joining_waitlist'         // Esperando preferencia para lista de espera
 
 interface UserSession {
   phoneNumber: string
@@ -23,6 +29,9 @@ interface UserSession {
     waitingForDate?: boolean
     appointments?: any[]
     selectedAppointment?: any
+    patientName?: string
+    reason?: string
+    nextFlow?: 'appointment' | 'waitlist'
     [key: string]: any
   }
   lastMessage?: string
@@ -35,6 +44,7 @@ class WhatsAppBot {
   private isReady: boolean = false
   private patternMatcher: PatternMatcher
   private userSessions: Map<string, UserSession> = new Map()
+  private reminderInterval: NodeJS.Timeout | null = null
 
   constructor() {
     this.client = createWhatsAppClient('.wwebjs_auth')
@@ -122,6 +132,7 @@ class WhatsAppBot {
       await this.patternMatcher.initialize()
       console.log('Patrones y formatos cargados correctamente')
       this.isReady = true
+      this.startReminderScheduler()
     })
 
     this.client.on('authenticated', () => {
@@ -160,14 +171,34 @@ class WhatsAppBot {
 
       // MÁQUINA DE ESTADOS - Procesar según el estado actual
       switch (session.state) {
+        case 'waiting_for_patient_name':
+          await this.handlePatientNameInput(message, phoneNumber, body, session)
+          return
+
+        case 'waiting_for_reason':
+          await this.handleReasonInput(message, phoneNumber, body)
+          return
+
         case 'waiting_for_date_time':
           // El usuario está esperando proporcionar fecha y hora para agendar
           await this.handleDateTimeInput(message, phoneNumber, body, session)
           return
 
+        case 'waiting_for_available_date':
+          await this.handleAvailableDateInput(message, phoneNumber, body)
+          return
+
+        case 'joining_waitlist':
+          await this.handleWaitlistInput(message, phoneNumber, body, session)
+          return
+
         case 'reagending_new_date':
           // El usuario está proporcionando nueva fecha/hora para reagendar
           await this.handleReagendarNewDateInput(message, phoneNumber, body, session)
+          return
+
+        case 'confirming_cancel_appointment':
+          await this.handleCancelConfirmation(message, phoneNumber, body, session)
           return
 
         case 'selecting_available_slot':
@@ -194,6 +225,7 @@ class WhatsAppBot {
         case 'canceling_appointment':
         case 'reagending_appointment':
         case 'confirming_appointment':
+        case 'completing_appointment':
           // El usuario está seleccionando una cita por número
           const number = this.parseNumberSelection(body)
           if (number !== null) {
@@ -223,16 +255,52 @@ class WhatsAppBot {
         } else if (lowerBody === 'mis citas' || lowerBody === 'citas' || lowerBody.includes('mis citas')) {
           await this.sendUserAppointments(message, phoneNumber)
           await this.clearSession(phoneNumber)
+        } else if (this.matchesCommandIntent(lowerBody, ['cancelar proxima cita', 'cancelar próxima cita', 'cancelar siguiente cita'])) {
+          if (await this.isAdminPhoneNumber(phoneNumber)) {
+            await this.handleAdminCancelNextAppointment(message, phoneNumber)
+          } else {
+            await message.reply('Esa opción solo está disponible para números administradores.')
+          }
         } else if (this.matchesCommandIntent(lowerBody, ['cancelar', 'cancelar cita', 'cancelar una cita', 'quiero cancelar', 'necesito cancelar'])) {
           await this.handleCancelAppointment(message, phoneNumber)
         } else if (this.matchesCommandIntent(lowerBody, ['reagendar', 'reagendar cita', 'reprogramar', 'reprogramar cita', 'quiero reagendar', 'quiero reprogramar'])) {
           await this.handleReagendarAppointment(message, phoneNumber)
         } else if (this.matchesCommandIntent(lowerBody, ['confirmar', 'confirmar cita', 'confirmar asistencia', 'quiero confirmar'])) {
           await this.handleConfirmAppointment(message, phoneNumber)
+        } else if (this.matchesCommandIntent(lowerBody, ['horarios', 'disponibilidad', 'ver horarios', 'horarios disponibles'])) {
+          await this.updateSessionState(phoneNumber, 'waiting_for_available_date', {})
+          await message.reply('📅 ¿De qué fecha quieres consultar horarios disponibles? Ejemplo: *mañana* o *15/01/2024*.')
+        } else if (this.matchesCommandIntent(lowerBody, ['lista de espera', 'espera', 'sin horario'])) {
+          await this.handleJoinWaitlist(message, phoneNumber)
+        } else if (this.matchesCommandIntent(lowerBody, ['completar', 'completar cita', 'marcar completada'])) {
+          if (await this.isAdminPhoneNumber(phoneNumber)) {
+            await this.handleCompleteAppointment(message, phoneNumber)
+          } else {
+            await message.reply('Esa opción solo está disponible para números administradores.')
+          }
+        } else if (this.matchesCommandIntent(lowerBody, ['info', 'informacion', 'información', 'ubicacion', 'ubicación', 'costos', 'pagos', 'politicas', 'políticas', 'duracion', 'duración'])) {
+          await this.sendInfoMessage(message)
+          await this.clearSession(phoneNumber)
+        } else if (this.matchesCommandIntent(lowerBody, ['reporte semanal', 'citas de la semana', 'semana'])) {
+          if (await this.isAdminPhoneNumber(phoneNumber)) {
+            await this.sendAppointmentReport(message, 'week')
+          } else {
+            await message.reply('Esa opción solo está disponible para números administradores.')
+          }
+        } else if (this.matchesCommandIntent(lowerBody, ['reporte', 'reporte diario', 'citas de hoy'])) {
+          if (await this.isAdminPhoneNumber(phoneNumber)) {
+            await this.sendAppointmentReport(message, 'day')
+          } else {
+            await message.reply('Esa opción solo está disponible para números administradores.')
+          }
         } else if (lowerBody === 'ayuda' || lowerBody === 'help' || lowerBody.includes('ayuda') || lowerBody.includes('comandos')) {
           await this.sendHelpMessage(message)
           await this.clearSession(phoneNumber)
         } else if (this.patternMatcher.isAppointmentRequest(message.body)) {
+          if (lowerBody.trim() === 'agendar' || lowerBody.trim() === 'cita') {
+            await this.beginAppointmentFlow(message, phoneNumber)
+            return
+          }
           await this.handleAppointmentRequest(message, phoneNumber)
           if (this.userSessions.get(phoneNumber)?.state !== 'selecting_available_slot') {
             await this.clearSession(phoneNumber)
@@ -279,18 +347,536 @@ class WhatsAppBot {
     return commands.some(command => normalized === command || normalized.startsWith(`${command} `))
   }
 
+  private getContactName(contact: Awaited<ReturnType<Message['getContact']>>): string | null {
+    const candidate = (contact.pushname || contact.name || '').trim()
+    if (!candidate || candidate === contact.number || /^\+?\d+$/.test(candidate)) {
+      return null
+    }
+    return candidate
+  }
+
+  private async getAdminPhoneNumbers(): Promise<string[]> {
+    const adminNumbers = await prisma.appointmentAdminNumber.findMany({
+      where: { isActive: true },
+      select: { phoneNumber: true }
+    })
+    return adminNumbers.map(admin => admin.phoneNumber.replace(/\D/g, '')).filter(Boolean)
+  }
+
+  private async isAdminPhoneNumber(phoneNumber: string): Promise<boolean> {
+    const normalized = phoneNumber.replace(/\D/g, '')
+    if (!normalized) return false
+    const adminNumber = await prisma.appointmentAdminNumber.findUnique({
+      where: { phoneNumber: normalized }
+    })
+    return Boolean(adminNumber?.isActive)
+  }
+
+  private async notifyAdmins(text: string) {
+    const adminNumbers = await this.getAdminPhoneNumbers()
+    if (adminNumbers.length === 0) {
+      console.warn('[Bot] No hay números admin activos para notificaciones de citas.')
+      return
+    }
+    for (const adminNumber of adminNumbers) {
+      try {
+        await this.client.sendMessage(`${adminNumber}@c.us`, text)
+      } catch (error) {
+        console.error(`Error notificando admin ${adminNumber}:`, error)
+      }
+    }
+  }
+
+  private async getMinimumChangeNoticeHours(): Promise<number> {
+    const settings = await prisma.businessHours.findFirst({
+      where: { isActive: true },
+      select: { minCancellationNoticeHours: true }
+    })
+    const value = settings?.minCancellationNoticeHours ?? 1
+    return Number.isFinite(value) && value >= 0 ? value : 1
+  }
+
+  private getAppointmentDateTime(appointment: { date: Date | string; time: string }): Date {
+    const appointmentDate = new Date(appointment.date)
+    const normalizedTime = normalizeTime(appointment.time) || appointment.time
+    const [hours, minutes] = normalizedTime.split(':').map(Number)
+    appointmentDate.setHours(hours || 0, minutes || 0, 0, 0)
+    return appointmentDate
+  }
+
+  private async canChangeAppointment(appointment: { date: Date | string; time: string }): Promise<boolean> {
+    const appointmentDate = this.getAppointmentDateTime(appointment)
+    const diffMs = appointmentDate.getTime() - Date.now()
+    const noticeHours = await this.getMinimumChangeNoticeHours()
+    return diffMs >= noticeHours * 60 * 60 * 1000
+  }
+
+  private buildGoogleCalendarUrl(params: {
+    title: string
+    date: Date
+    time: string
+    details?: string
+  }): string {
+    const start = new Date(params.date)
+    const [hours, minutes] = (normalizeTime(params.time) || params.time).split(':').map(Number)
+    start.setHours(hours || 0, minutes || 0, 0, 0)
+    const end = new Date(start)
+    end.setHours(end.getHours() + 1)
+    const formatForCalendar = (date: Date) => date.toISOString().replace(/[-:]/g, '').replace(/\.\d{3}Z$/, 'Z')
+    const query = new URLSearchParams({
+      action: 'TEMPLATE',
+      text: params.title,
+      dates: `${formatForCalendar(start)}/${formatForCalendar(end)}`,
+      details: params.details || 'Cita agendada por WhatsApp'
+    })
+    return `https://calendar.google.com/calendar/render?${query.toString()}`
+  }
+
+  private async beginAppointmentFlow(message: Message, phoneNumber: string) {
+    const contact = await message.getContact()
+    const patientName = this.getContactName(contact)
+    if (!patientName) {
+      await this.updateSessionState(phoneNumber, 'waiting_for_patient_name', {
+        nextFlow: 'appointment'
+      })
+      await message.reply('👤 Para agendar, primero dime tu nombre completo.')
+      return
+    }
+
+    await this.updateSessionState(phoneNumber, 'waiting_for_reason', {
+      patientName,
+      nextFlow: 'appointment'
+    })
+    await message.reply(
+      `Gracias, ${patientName}.\n\n` +
+        '📝 ¿Cuál es el motivo de tu consulta? Puedes responder breve, por ejemplo: *ansiedad*, *seguimiento*, *primera vez*.'
+    )
+  }
+
+  private async askAppointmentDateTime(message: Message, phoneNumber: string) {
+    await this.updateSessionState(phoneNumber, 'waiting_for_date_time', { waitingForDate: true })
+    await message.reply(
+      '📅 *Agendar Cita*\n\n' +
+      'Por favor, proporciona la fecha y hora que deseas.\n\n' +
+      '*Ejemplos:*\n' +
+      '• 15/01/2024 10:00\n' +
+      '• Mañana a las 2pm\n' +
+      '• Lunes a las 10 horas\n' +
+      '• 20-01-2024 15:30\n\n' +
+      'También puedes escribir solo la fecha (ej: *15/01/2024*) y usaré las 10:00 por defecto.'
+    )
+  }
+
+  private async handlePatientNameInput(message: Message, phoneNumber: string, body: string, session: UserSession) {
+    const patientName = body.trim()
+    if (patientName.length < 2) {
+      await message.reply('Por favor, escribe tu nombre completo.')
+      return
+    }
+    if (session.context?.nextFlow === 'waitlist') {
+      await this.updateSessionState(phoneNumber, 'joining_waitlist', { patientName })
+      await message.reply(
+        '📋 *Lista de espera*\n\n' +
+          'Dime qué fecha u horario prefieres y cualquier nota útil.\n' +
+          'Ejemplo: *viernes por la tarde, ansiedad*.'
+      )
+      return
+    }
+
+    await this.updateSessionState(phoneNumber, 'waiting_for_reason', { patientName, nextFlow: 'appointment' })
+    await message.reply(
+      `Gracias, ${patientName}.\n\n` +
+        '📝 ¿Cuál es el motivo de tu consulta?'
+    )
+  }
+
+  private async handleReasonInput(message: Message, phoneNumber: string, body: string) {
+    const reason = body.trim()
+    if (reason.length < 2) {
+      await message.reply('Por favor, escribe un motivo breve de consulta.')
+      return
+    }
+    await this.updateSessionState(phoneNumber, 'waiting_for_date_time', {
+      reason,
+      waitingForDate: true
+    })
+    await this.askAppointmentDateTime(message, phoneNumber)
+  }
+
+  private async sendAvailableSlotsForDate(message: Message, date: Date) {
+    const availability = await checkDayAvailability(date)
+    const freeSlots = availability.availableSlots.filter(slot => slot.available)
+    const formattedDate = format(date, "EEEE, d 'de' MMMM 'de' yyyy", { locale: es })
+
+    if (freeSlots.length === 0) {
+      const nextSlots = await findNextAvailableSlots(date, '10:00', 14)
+      if (nextSlots.length === 0) {
+        await message.reply(
+          `No encontré horarios disponibles para ${formattedDate} ni en los próximos días.\n\n` +
+            'Si quieres que te avisemos cuando se libere un horario, escribe *lista de espera*.'
+        )
+        return
+      }
+      let response = `No hay horarios libres para ${formattedDate}.\n\n📅 *Próximos horarios disponibles:*\n\n`
+      nextSlots.forEach((slot, index) => {
+        response += `${index + 1}. ${format(slot.date, "dd/MM/yyyy", { locale: es })} a las ${slot.time}\n`
+      })
+      response += '\n\nSi ninguno te sirve, escribe *lista de espera*.'
+      await message.reply(response.trim())
+      return
+    }
+
+    let response = `📅 *Horarios disponibles para ${formattedDate}:*\n\n`
+    freeSlots.slice(0, 12).forEach((slot, index) => {
+      response += `${index + 1}. ${slot.time}\n`
+    })
+    if (freeSlots.length > 12) {
+      response += `\nY ${freeSlots.length - 12} horarios más.`
+    }
+    response += '\n\nPara agendar responde *1* o escribe *agendar* con fecha y hora.'
+    await message.reply(response)
+  }
+
+  private async handleAvailableDateInput(message: Message, phoneNumber: string, body: string) {
+    const parsedDate = this.patternMatcher.parseDate(body)
+    if (!parsedDate) {
+      await message.reply(
+        '❌ No pude entender la fecha. Ejemplos: *mañana*, *lunes*, *15/01/2024*.'
+      )
+      return
+    }
+    await this.sendAvailableSlotsForDate(message, parsedDate.date)
+    await this.clearSession(phoneNumber)
+  }
+
+  private async handleCancelConfirmation(message: Message, phoneNumber: string, body: string, session: UserSession) {
+    const appointment = session.context?.selectedAppointment
+    const answer = body.trim().toLowerCase()
+    if (!appointment) {
+      await message.reply('No encontré la cita a cancelar. Escribe *hola* para volver al menú.')
+      await this.clearSession(phoneNumber)
+      return
+    }
+    if (answer === 'si cancelar' || answer === 'sí cancelar' || answer === 'si' || answer === 'sí') {
+      await prisma.appointment.update({
+        where: { id: appointment.id },
+        data: {
+          status: 'cancelled',
+          reminder24hSentAt: new Date(),
+          reminder2hSentAt: new Date()
+        }
+      })
+      await message.reply('✅ Tu cita ha sido cancelada exitosamente.')
+      await this.notifyAdmins(
+        `❌ Cita cancelada\nPaciente: ${appointment.patientName}\nTeléfono: ${phoneNumber}\nFecha: ${format(appointment.date, 'dd/MM/yyyy')} ${appointment.time}`
+      )
+      await this.clearSession(phoneNumber)
+      await this.sendWelcomeMessage(message, phoneNumber)
+      return
+    }
+    if (answer === 'no' || answer === 'cancelar no' || answer === 'conservar') {
+      await message.reply('✅ Perfecto, conservamos tu cita.')
+      await this.clearSession(phoneNumber)
+      await this.sendWelcomeMessage(message, phoneNumber)
+      return
+    }
+    await message.reply('Responde *SI CANCELAR* para confirmar la cancelación o *NO* para conservar la cita.')
+  }
+
+  private async handleCompleteAppointment(message: Message, phoneNumber: string) {
+    const today = new Date()
+    today.setHours(0, 0, 0, 0)
+    const tomorrow = new Date(today)
+    tomorrow.setDate(tomorrow.getDate() + 1)
+    const appointments = await prisma.appointment.findMany({
+      where: {
+        date: { gte: today, lt: tomorrow },
+        status: { in: ['pending', 'confirmed'] }
+      },
+      orderBy: [{ date: 'asc' }, { time: 'asc' }]
+    })
+
+    if (appointments.length === 0) {
+      await message.reply('No hay citas pendientes o confirmadas para completar hoy.')
+      return
+    }
+
+    await this.updateSessionState(phoneNumber, 'completing_appointment', { appointments })
+    let response = `✅ *Marcar cita completada*\n\nElige el número de la cita:\n\n`
+    appointments.forEach((apt, index) => {
+      response += `${index + 1}. ${apt.patientName} - ${apt.time} (${apt.status === 'confirmed' ? 'Confirmada' : 'Pendiente'})\n`
+    })
+    await message.reply(response.trim())
+  }
+
+  private async sendAppointmentReport(message: Message, range: 'day' | 'week') {
+    const start = new Date()
+    start.setHours(0, 0, 0, 0)
+    const end = new Date(start)
+    end.setDate(end.getDate() + (range === 'week' ? 7 : 1))
+    const appointments = await prisma.appointment.findMany({
+      where: { date: { gte: start, lt: end } },
+      orderBy: [{ date: 'asc' }, { time: 'asc' }]
+    })
+    const waitlistActive = await prisma.appointmentWaitlistEntry.count({
+      where: { status: 'active' }
+    })
+    const counts = appointments.reduce<Record<string, number>>((acc, apt) => {
+      acc[apt.status] = (acc[apt.status] || 0) + 1
+      return acc
+    }, {})
+
+    let response = `📊 *Reporte ${range === 'week' ? 'semanal' : 'de hoy'}*\n\n`
+    response += `Total citas: ${appointments.length}\n`
+    response += `Pendientes: ${counts.pending || 0}\n`
+    response += `Confirmadas: ${counts.confirmed || 0}\n`
+    response += `Canceladas: ${counts.cancelled || 0}\n`
+    response += `Completadas: ${counts.completed || 0}\n`
+    response += `Lista de espera activa: ${waitlistActive}\n`
+    if (appointments.length > 0) {
+      response += `\n*Citas:*\n`
+      appointments.forEach((apt, index) => {
+        response += `${index + 1}. ${format(apt.date, 'dd/MM/yyyy')} ${apt.time} - ${apt.patientName} (${apt.status})\n`
+      })
+    }
+    await message.reply(response.trim())
+  }
+
+  private startReminderScheduler() {
+    if (this.reminderInterval) return
+    this.sendDueReminders().catch(error => {
+      console.error('Error enviando recordatorios iniciales:', error)
+    })
+    this.reminderInterval = setInterval(() => {
+      this.sendDueReminders().catch(error => {
+        console.error('Error enviando recordatorios:', error)
+      })
+    }, 5 * 60 * 1000)
+  }
+
+  private async sendDueReminders() {
+    const now = new Date()
+    const in25Hours = new Date(now.getTime() + 25 * 60 * 60 * 1000)
+    const in24Hours = new Date(now.getTime() + 23 * 60 * 60 * 1000)
+    const in3Hours = new Date(now.getTime() + 3 * 60 * 60 * 1000)
+    const in2Hours = new Date(now.getTime() + 90 * 60 * 1000)
+    const todayStart = new Date(now)
+    todayStart.setHours(0, 0, 0, 0)
+    const searchEnd = new Date(now)
+    searchEnd.setDate(searchEnd.getDate() + 2)
+    searchEnd.setHours(23, 59, 59, 999)
+
+    const appointments = await prisma.appointment.findMany({
+      where: {
+        status: { in: ['pending', 'confirmed'] },
+        date: { gte: todayStart, lte: searchEnd },
+        OR: [
+          { reminder24hSentAt: null },
+          { reminder2hSentAt: null }
+        ]
+      },
+      orderBy: [{ date: 'asc' }]
+    })
+
+    for (const appointment of appointments) {
+      const appointmentDateTime = new Date(appointment.date)
+      const normalizedTime = normalizeTime(appointment.time) || appointment.time
+      const [hours, minutes] = normalizedTime.split(':').map(Number)
+      appointmentDateTime.setHours(hours || 0, minutes || 0, 0, 0)
+      if (appointmentDateTime < now || appointmentDateTime > in25Hours) {
+        continue
+      }
+      const chatId = `${appointment.phoneNumber.replace(/\D/g, '')}@c.us`
+
+      if (!appointment.reminder24hSentAt && appointmentDateTime >= in24Hours && appointmentDateTime <= in25Hours) {
+        try {
+          await this.client.sendMessage(
+            chatId,
+            `⏰ Recordatorio: tienes una cita mañana a las ${appointment.time}.\n\n` +
+              'Responde *confirmar* para confirmar asistencia, *reagendar* para moverla o *cancelar* si no podrás asistir.'
+          )
+          await prisma.appointment.update({
+            where: { id: appointment.id },
+            data: { reminder24hSentAt: new Date() }
+          })
+        } catch (error) {
+          console.error('Error enviando recordatorio 24h:', error)
+        }
+      }
+
+      if (!appointment.reminder2hSentAt && appointmentDateTime >= in2Hours && appointmentDateTime <= in3Hours) {
+        try {
+          await this.client.sendMessage(
+            chatId,
+            `⏰ Recordatorio: tu cita es hoy a las ${appointment.time}.\n\nTe esperamos.`
+          )
+          await prisma.appointment.update({
+            where: { id: appointment.id },
+            data: { reminder2hSentAt: new Date() }
+          })
+        } catch (error) {
+          console.error('Error enviando recordatorio 2h:', error)
+        }
+      }
+    }
+  }
+
+  private async handleJoinWaitlist(message: Message, phoneNumber: string) {
+    const contact = await message.getContact()
+    const patientName = this.getContactName(contact)
+    if (!patientName) {
+      await this.updateSessionState(phoneNumber, 'waiting_for_patient_name', {
+        nextFlow: 'waitlist'
+      })
+      await message.reply('👤 Para agregarte a lista de espera, dime tu nombre completo.')
+      return
+    }
+
+    await this.updateSessionState(phoneNumber, 'joining_waitlist', { patientName })
+    await message.reply(
+      '📋 *Lista de espera*\n\n' +
+        'Dime qué fecha u horario prefieres y cualquier nota útil.\n' +
+        'Ejemplo: *viernes por la tarde, primera vez*.'
+    )
+  }
+
+  private async handleWaitlistInput(message: Message, phoneNumber: string, body: string, session: UserSession) {
+    const contact = await message.getContact()
+    const patientName = session.context?.patientName || this.getContactName(contact) || contact.number || 'Paciente'
+    const parsedDate = this.patternMatcher.parseDate(body)
+    const parsedTime = this.patternMatcher.parseTime(body)
+    await prisma.appointmentWaitlistEntry.create({
+      data: {
+        patientName,
+        phoneNumber,
+        preferredDate: parsedDate?.date || null,
+        preferredTime: parsedTime?.time || null,
+        notes: body.trim() || null
+      }
+    })
+    await message.reply(
+      '✅ Te agregué a la lista de espera. Te avisaremos si se libera un horario compatible.'
+    )
+    await this.notifyAdmins(
+      `📋 Nueva entrada en lista de espera\nPaciente: ${patientName}\nTeléfono: ${phoneNumber}\nPreferencia: ${body.trim() || 'Sin detalle'}`
+    )
+    await this.clearSession(phoneNumber)
+  }
+
+  private async sendInfoMessage(message: Message) {
+    const location = process.env.APPOINTMENT_INFO_LOCATION || 'Ubicación pendiente de configurar.'
+    const costs = process.env.APPOINTMENT_INFO_COSTS || 'Costos pendientes de configurar.'
+    const payments = process.env.APPOINTMENT_INFO_PAYMENTS || 'Formas de pago pendientes de configurar.'
+    const policies = process.env.APPOINTMENT_INFO_POLICIES || 'Políticas pendientes de configurar.'
+    const duration = process.env.APPOINTMENT_INFO_DURATION || 'Duración pendiente de configurar.'
+
+    await message.reply(
+      `ℹ️ *Información del consultorio*\n\n` +
+        `📍 *Ubicación:* ${location}\n\n` +
+        `💵 *Costos:* ${costs}\n\n` +
+        `💳 *Formas de pago:* ${payments}\n\n` +
+        `📋 *Políticas:* ${policies}\n\n` +
+        `⏱️ *Duración:* ${duration}\n\n` +
+        `Para agendar escribe *1* o *agendar*.`
+    )
+  }
+
+  private async getNextUpcomingAppointment() {
+    const today = new Date()
+    today.setHours(0, 0, 0, 0)
+    const appointments = await prisma.appointment.findMany({
+      where: {
+        date: { gte: today },
+        status: { in: ['pending', 'confirmed'] }
+      },
+      orderBy: [{ date: 'asc' }, { time: 'asc' }],
+      take: 50
+    })
+    const now = new Date()
+    return appointments
+      .map(appointment => ({
+        appointment,
+        appointmentDateTime: this.getAppointmentDateTime(appointment)
+      }))
+      .filter(item => item.appointmentDateTime > now)
+      .sort((a, b) => a.appointmentDateTime.getTime() - b.appointmentDateTime.getTime())[0]?.appointment ?? null
+  }
+
+  private async handleAdminCancelNextAppointment(message: Message, adminPhoneNumber: string) {
+    const appointment = await this.getNextUpcomingAppointment()
+    if (!appointment) {
+      await message.reply('No hay próximas citas pendientes o confirmadas para cancelar.')
+      return
+    }
+
+    const noticeHours = await this.getMinimumChangeNoticeHours()
+    if (!(await this.canChangeAppointment(appointment))) {
+      const formattedDate = format(appointment.date, "dd/MM/yyyy", { locale: es })
+      await message.reply(
+        `❌ No se puede cancelar la próxima cita porque faltan menos de ${noticeHours} horas.\n\n` +
+          `Próxima cita: ${appointment.patientName}, ${formattedDate} a las ${appointment.time}.`
+      )
+      return
+    }
+
+    await prisma.appointment.update({
+      where: { id: appointment.id },
+      data: {
+        status: 'cancelled',
+        reminder24hSentAt: new Date(),
+        reminder2hSentAt: new Date()
+      }
+    })
+
+    await this.updateSessionState(appointment.phoneNumber, 'reagending_new_date', {
+      selectedAppointment: appointment
+    })
+
+    const formattedDate = format(appointment.date, "EEEE, d 'de' MMMM 'de' yyyy", { locale: es })
+    const patientChatId = `${appointment.phoneNumber.replace(/\D/g, '')}@c.us`
+    try {
+      await this.client.sendMessage(
+        patientChatId,
+        `⚠️ Tu cita del ${formattedDate} a las ${appointment.time} fue cancelada por administración.\n\n` +
+          'Para reagendar, responde con la nueva fecha y hora que prefieres.\n' +
+          'Ejemplo: *mañana a las 2pm* o *15/01/2024 10:00*.'
+      )
+    } catch (error) {
+      console.error('Error notificando cancelación admin al paciente:', error)
+    }
+
+    await message.reply(
+      `✅ Próxima cita cancelada.\n\n` +
+        `Paciente: ${appointment.patientName}\n` +
+        `Fecha: ${formattedDate}\n` +
+        `Hora: ${appointment.time}\n\n` +
+        'Ya avisé al paciente y quedó en flujo de reagendar.'
+    )
+    await this.notifyAdmins(
+      `⚠️ Cita cancelada por admin\nAdmin: ${adminPhoneNumber}\nPaciente: ${appointment.patientName}\nTeléfono: ${appointment.phoneNumber}\nFecha: ${formattedDate}\nHora: ${appointment.time}`
+    )
+  }
+
   private async handleNumberSelection(message: Message, phoneNumber: string, number: number, session: UserSession) {
     if (session.state === 'canceling_appointment' && session.context?.appointments) {
       const appointments = session.context.appointments
       if (number > 0 && number <= appointments.length) {
         const appointment = appointments[number - 1]
-        await prisma.appointment.update({
-          where: { id: appointment.id },
-          data: { status: 'cancelled' }
+        const noticeHours = await this.getMinimumChangeNoticeHours()
+        if (!(await this.canChangeAppointment(appointment))) {
+          await message.reply(
+            `❌ Para cancelar necesitas hacerlo con al menos ${noticeHours} horas de anticipación.`
+          )
+          await this.clearSession(phoneNumber)
+          return
+        }
+        await this.updateSessionState(phoneNumber, 'confirming_cancel_appointment', {
+          selectedAppointment: appointment
         })
-        await message.reply('✅ Tu cita ha sido cancelada exitosamente.')
-        await this.clearSession(phoneNumber)
-        await this.sendWelcomeMessage(message, phoneNumber)
+        await message.reply(
+          `⚠️ Vas a cancelar la cita del ${format(appointment.date, "dd/MM/yyyy")} a las ${appointment.time}.\n\n` +
+            'Responde *SI CANCELAR* para confirmar o *NO* para conservarla.'
+        )
         return
       } else {
         await message.reply(`❌ Número inválido. Por favor, elige un número entre 1 y ${appointments.length}.`)
@@ -301,6 +887,14 @@ class WhatsAppBot {
     if (session.state === 'reagending_appointment' && session.context?.appointments) {
       const appointments = session.context.appointments
       if (number > 0 && number <= appointments.length) {
+        const noticeHours = await this.getMinimumChangeNoticeHours()
+        if (!(await this.canChangeAppointment(appointments[number - 1]))) {
+          await message.reply(
+            `❌ Para reagendar necesitas hacerlo con al menos ${noticeHours} horas de anticipación.`
+          )
+          await this.clearSession(phoneNumber)
+          return
+        }
         await this.updateSessionState(phoneNumber, 'reagending_new_date', { selectedAppointment: appointments[number - 1] })
         await message.reply(
           `📅 Has seleccionado la cita del ${format(appointments[number - 1].date, "dd/MM/yyyy")} a las ${appointments[number - 1].time}.\n\n` +
@@ -332,21 +926,33 @@ class WhatsAppBot {
       }
     }
 
+    if (session.state === 'completing_appointment' && session.context?.appointments) {
+      const appointments = session.context.appointments
+      if (number > 0 && number <= appointments.length) {
+        const appointment = appointments[number - 1]
+        await prisma.appointment.update({
+          where: { id: appointment.id },
+          data: {
+            status: 'completed',
+            reminder24hSentAt: new Date(),
+            reminder2hSentAt: new Date()
+          }
+        })
+        await message.reply('✅ Cita marcada como completada.')
+        await this.clearSession(phoneNumber)
+        await this.sendWelcomeMessage(message, phoneNumber)
+        return
+      } else {
+        await message.reply(`❌ Número inválido. Por favor, elige un número entre 1 y ${appointments.length}.`)
+        return
+      }
+    }
+
     // Manejar selección del menú principal (solo en estado idle)
     if (session.state === 'idle') {
       switch (number) {
         case 1:
-          await this.updateSessionState(phoneNumber, 'waiting_for_date_time', { waitingForDate: true })
-          await message.reply(
-            '📅 *Agendar Cita*\n\n' +
-            'Por favor, proporciona la fecha y hora que deseas.\n\n' +
-            '*Ejemplos:*\n' +
-            '• 15/01/2024 10:00\n' +
-            '• Mañana a las 2pm\n' +
-            '• Lunes a las 10 horas\n' +
-            '• 20-01-2024 15:30\n\n' +
-            'También puedes escribir solo la fecha (ej: *15/01/2024*) y luego la hora.'
-          )
+          await this.beginAppointmentFlow(message, phoneNumber)
           break
         case 2:
           await this.sendUserAppointments(message, phoneNumber)
@@ -365,8 +971,29 @@ class WhatsAppBot {
           await this.sendHelpMessage(message)
           await this.clearSession(phoneNumber)
           break
+        case 7:
+          await this.updateSessionState(phoneNumber, 'waiting_for_available_date', {})
+          await message.reply('📅 ¿De qué fecha quieres consultar horarios disponibles? Ejemplo: *mañana* o *15/01/2024*.')
+          break
+        case 8:
+          await this.handleJoinWaitlist(message, phoneNumber)
+          break
+        case 9:
+          if (await this.isAdminPhoneNumber(phoneNumber)) {
+            await this.handleCompleteAppointment(message, phoneNumber)
+          } else {
+            await message.reply('Esa opción solo está disponible para números administradores.')
+          }
+          break
+        case 10:
+          if (await this.isAdminPhoneNumber(phoneNumber)) {
+            await this.sendAppointmentReport(message, 'day')
+          } else {
+            await message.reply('Esa opción solo está disponible para números administradores.')
+          }
+          break
         default:
-          await message.reply('❌ Opción inválida. Por favor, elige un número del 1 al 6.')
+          await message.reply('❌ Opción inválida. Por favor, elige un número del 1 al 10.')
       }
     }
   }
@@ -447,7 +1074,8 @@ class WhatsAppBot {
       
       // Crear la cita con el slot seleccionado
       const contact = await message.getContact()
-      const patientName = contact.pushname || contact.number || 'Paciente'
+      const patientName = session.context?.patientName || this.getContactName(contact) || contact.number || 'Paciente'
+      const reason = session.context?.reason
       
       const appointment = await prisma.appointment.create({
         data: {
@@ -455,19 +1083,31 @@ class WhatsAppBot {
           phoneNumber,
           date: selectedSlot.date,
           time: selectedSlot.time,
-          status: 'pending'
+          status: 'pending',
+          notes: reason ? `Motivo: ${reason}` : null
         }
       })
       
       const formattedDate = format(selectedSlot.date, "EEEE, d 'de' MMMM 'de' yyyy", { locale: es })
+      const calendarUrl = this.buildGoogleCalendarUrl({
+        title: 'Cita de psicología',
+        date: selectedSlot.date,
+        time: selectedSlot.time,
+        details: reason ? `Motivo: ${reason}` : undefined
+      })
       
       await message.reply(
         `✅ *Cita agendada exitosamente*\n\n` +
         `📅 Fecha: ${formattedDate}\n` +
         `🕐 Hora: ${selectedSlot.time}\n` +
         `👤 Paciente: ${patientName}\n\n` +
+        `${reason ? `📝 Motivo: ${reason}\n\n` : ''}` +
         `Tu cita está pendiente de confirmación. Te notificaremos cuando sea confirmada.\n\n` +
+        `Agregar a Google Calendar:\n${calendarUrl}\n\n` +
         `ID de cita: ${appointment.id.substring(0, 8)}`
+      )
+      await this.notifyAdmins(
+        `📅 Nueva cita agendada\nPaciente: ${patientName}\nTeléfono: ${phoneNumber}\nFecha: ${formattedDate}\nHora: ${selectedSlot.time}${reason ? `\nMotivo: ${reason}` : ''}`
       )
       
       await this.clearSession(phoneNumber)
@@ -518,6 +1158,7 @@ class WhatsAppBot {
 
   private async sendWelcomeMessage(message: Message, phoneNumber: string) {
     await this.updateSessionState(phoneNumber, 'idle', {})
+    const isAdmin = await this.isAdminPhoneNumber(phoneNumber)
     
     const welcomeText = `👋 ¡Hola! Bienvenido al sistema de agendamiento de citas de psicología.
 
@@ -529,6 +1170,11 @@ class WhatsAppBot {
 4️⃣ *Reagendar una cita*
 5️⃣ *Confirmar asistencia*
 6️⃣ *Ayuda / Comandos*
+7️⃣ *Ver horarios disponibles*
+8️⃣ *Lista de espera*
+${isAdmin ? '9️⃣ *Marcar cita completada*\n🔟 *Reporte del día*\nEscribe *cancelar próxima cita* para cancelar la cita más cercana y avisar al paciente.\n' : ''}
+
+También puedes escribir *info* para ver ubicación, costos, pagos, políticas y duración.
 
 *Ejemplo:* Responde con *1* para agendar una cita.`
     
@@ -560,6 +1206,10 @@ class WhatsAppBot {
 4️⃣ Reagendar una cita
 5️⃣ Confirmar asistencia
 6️⃣ Ayuda
+7️⃣ Ver horarios disponibles
+8️⃣ Lista de espera
+9️⃣ Marcar cita completada (admin)
+🔟 Reporte del día (admin)
 
 *Comandos de texto:*
 • *hola* - Iniciar conversación
@@ -568,6 +1218,11 @@ class WhatsAppBot {
 • *cancelar* - Cancelar una cita
 • *reagendar* - Reagendar una cita
 • *confirmar* - Confirmar asistencia
+• *horarios* - Consultar disponibilidad
+• *lista de espera* - Solicitar aviso si se libera horario
+• *info* - Ver ubicación, costos, pagos, políticas y duración
+• *reporte semanal* - Resumen de la semana (admin)
+• *cancelar próxima cita* - Admin cancela la cita más cercana y avisa al paciente
 • *ayuda* - Mostrar esta ayuda
 
 *Formatos de fecha aceptados:*
@@ -742,7 +1397,7 @@ class WhatsAppBot {
           } else {
             await message.reply(
               `❌ Lo siento, ese día no es laborable y no hay citas disponibles en los próximos días.\n` +
-              `Por favor, intenta con otra fecha.`
+              `Por favor, intenta con otra fecha o escribe *lista de espera* para que te avisemos si se libera un horario.`
             )
             return
           }
@@ -783,7 +1438,7 @@ class WhatsAppBot {
           } else {
             await message.reply(
               `❌ Lo siento, ese día ya está completamente lleno y no hay citas disponibles en los próximos días.\n` +
-              `Por favor, intenta con otra fecha.`
+              `Por favor, intenta con otra fecha o escribe *lista de espera* para que te avisemos si se libera un horario.`
             )
             return
           }
@@ -827,7 +1482,7 @@ class WhatsAppBot {
         } else {
           await message.reply(
             `❌ Lo siento, ese horario ya está ocupado.\n` +
-            `Por favor, elige otro horario disponible.`
+            `Por favor, elige otro horario disponible o escribe *lista de espera*.`
           )
           return
         }
@@ -835,7 +1490,9 @@ class WhatsAppBot {
 
       // Obtener nombre del contacto
       const contact = await message.getContact()
-      const patientName = contact.pushname || contact.number || 'Paciente'
+      const session = await this.getSession(phoneNumber)
+      const patientName = session.context?.patientName || this.getContactName(contact) || contact.number || 'Paciente'
+      const reason = session.context?.reason
 
       // Crear la cita
       const appointment = await prisma.appointment.create({
@@ -844,11 +1501,18 @@ class WhatsAppBot {
           phoneNumber,
           date: appointmentDate,
           time: appointmentTime,
-          status: 'pending'
+          status: 'pending',
+          notes: reason ? `Motivo: ${reason}` : null
         }
       })
 
       const formattedDate = format(appointmentDate, "EEEE, d 'de' MMMM 'de' yyyy", { locale: es })
+      const calendarUrl = this.buildGoogleCalendarUrl({
+        title: 'Cita de psicología',
+        date: appointmentDate,
+        time: appointmentTime,
+        details: reason ? `Motivo: ${reason}` : undefined
+      })
       
       console.log(`[SUCCESS] Cita agendada exitosamente - ID: ${appointment.id}, Fecha: ${formattedDate}, Hora: ${appointmentTime}`)
       
@@ -857,8 +1521,13 @@ class WhatsAppBot {
         `📅 Fecha: ${formattedDate}\n` +
         `🕐 Hora: ${appointmentTime}\n` +
         `👤 Paciente: ${patientName}\n\n` +
+        `${reason ? `📝 Motivo: ${reason}\n\n` : ''}` +
         `Tu cita está pendiente de confirmación. Te notificaremos cuando sea confirmada.\n\n` +
+        `Agregar a Google Calendar:\n${calendarUrl}\n\n` +
         `ID de cita: ${appointment.id.substring(0, 8)}`
+      )
+      await this.notifyAdmins(
+        `📅 Nueva cita agendada\nPaciente: ${patientName}\nTeléfono: ${phoneNumber}\nFecha: ${formattedDate}\nHora: ${appointmentTime}${reason ? `\nMotivo: ${reason}` : ''}`
       )
 
     } catch (error) {
@@ -925,14 +1594,21 @@ class WhatsAppBot {
     }
 
     if (appointments.length === 1) {
-      // Si solo hay una cita, cancelarla directamente
-      await prisma.appointment.update({
-        where: { id: appointments[0].id },
-        data: { status: 'cancelled' }
+      const noticeHours = await this.getMinimumChangeNoticeHours()
+      if (!(await this.canChangeAppointment(appointments[0]))) {
+        await message.reply(
+          `❌ Para cancelar necesitas hacerlo con al menos ${noticeHours} horas de anticipación.`
+        )
+        this.clearSession(phoneNumber)
+        return
+      }
+      await this.updateSessionState(phoneNumber, 'confirming_cancel_appointment', {
+        selectedAppointment: appointments[0]
       })
-      
-      await message.reply('✅ Tu cita ha sido cancelada exitosamente.')
-      this.clearSession(phoneNumber)
+      await message.reply(
+        `⚠️ Vas a cancelar tu cita del ${format(appointments[0].date, "dd/MM/yyyy")} a las ${appointments[0].time}.\n\n` +
+          'Responde *SI CANCELAR* para confirmar o *NO* para conservarla.'
+      )
       return
     }
 
@@ -973,6 +1649,14 @@ class WhatsAppBot {
     }
 
     if (appointments.length === 1) {
+      const noticeHours = await this.getMinimumChangeNoticeHours()
+      if (!(await this.canChangeAppointment(appointments[0]))) {
+        await message.reply(
+          `❌ Para reagendar necesitas hacerlo con al menos ${noticeHours} horas de anticipación.`
+        )
+        this.clearSession(phoneNumber)
+        return
+      }
       await this.updateSessionState(phoneNumber, 'reagending_new_date', { selectedAppointment: appointments[0] })
       
       await message.reply(
@@ -1161,17 +1845,29 @@ class WhatsAppBot {
         data: {
           date: newDate,
           time: newTime,
-          status: 'pending' // Resetear a pendiente cuando se reagenda
+          status: 'pending', // Resetear a pendiente cuando se reagenda
+          reminder24hSentAt: null,
+          reminder2hSentAt: null
         }
       })
 
       const formattedDate = format(newDate, "EEEE, d 'de' MMMM 'de' yyyy", { locale: es })
+      const calendarUrl = this.buildGoogleCalendarUrl({
+        title: 'Cita de psicología',
+        date: newDate,
+        time: newTime,
+        details: oldAppointment.notes || undefined
+      })
       
       await message.reply(
         `✅ *Cita reagendada exitosamente*\n\n` +
         `📅 Nueva fecha: ${formattedDate}\n` +
         `🕐 Nueva hora: ${newTime}\n\n` +
-        `Tu cita ha sido actualizada y está pendiente de confirmación.`
+        `Tu cita ha sido actualizada y está pendiente de confirmación.\n\n` +
+        `Agregar a Google Calendar:\n${calendarUrl}`
+      )
+      await this.notifyAdmins(
+        `🔄 Cita reagendada\nPaciente: ${oldAppointment.patientName}\nTeléfono: ${phoneNumber}\nNueva fecha: ${formattedDate}\nNueva hora: ${newTime}`
       )
 
       return true
@@ -1199,6 +1895,10 @@ class WhatsAppBot {
 
   public async stop() {
     try {
+      if (this.reminderInterval) {
+        clearInterval(this.reminderInterval)
+        this.reminderInterval = null
+      }
       await this.client.destroy()
       this.isReady = false
     } catch (error) {

@@ -1,4 +1,5 @@
 export { default as AppointmentCard } from '@/components/AppointmentCard'
+export { default as AppointmentAdminNumbersManager } from '@/components/AppointmentAdminNumbersManager'
 export { default as AppointmentForm } from '@/components/AppointmentForm'
 export { default as AppointmentList } from '@/components/AppointmentList'
 export { default as BotDateFormatsManager } from '@/components/BotDateFormatsManager'

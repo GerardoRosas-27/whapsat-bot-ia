@@ -134,6 +134,35 @@ export default function AppointmentCard({ appointment, onUpdate, onDelete }: App
     }
   }
 
+  const handleStatusChange = async (status: string) => {
+    try {
+      const token = localStorage.getItem('token')
+      if (!token) {
+        alert('No estás autenticado.')
+        return
+      }
+
+      const response = await fetch(`/api/appointments/${appointment.id}`, {
+        method: 'PATCH',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${token}`
+        },
+        body: JSON.stringify({ status })
+      })
+
+      const data = await response.json().catch(() => ({}))
+      if (response.ok) {
+        onUpdate()
+      } else {
+        alert(data.error || `Error al actualizar estado (${response.status})`)
+      }
+    } catch (error) {
+      console.error('Error actualizando estado:', error)
+      alert('Error de conexión.')
+    }
+  }
+
   if (isEditing) {
     return (
       <div style={{
@@ -331,11 +360,50 @@ export default function AppointmentCard({ appointment, onUpdate, onDelete }: App
         </div>
       )}
 
-      <div style={{ display: 'flex', gap: '10px' }}>
+      <div style={{ display: 'flex', gap: '10px', flexWrap: 'wrap' }}>
+        {appointment.status === 'pending' && (
+          <button
+            onClick={() => handleStatusChange('confirmed')}
+            style={{
+              flex: 1,
+              minWidth: '100px',
+              padding: '8px',
+              background: '#10b981',
+              color: 'white',
+              border: 'none',
+              borderRadius: '4px',
+              cursor: 'pointer',
+              fontSize: '13px',
+              fontWeight: '500'
+            }}
+          >
+            Confirmar
+          </button>
+        )}
+        {(appointment.status === 'pending' || appointment.status === 'confirmed') && (
+          <button
+            onClick={() => handleStatusChange('completed')}
+            style={{
+              flex: 1,
+              minWidth: '100px',
+              padding: '8px',
+              background: '#2563eb',
+              color: 'white',
+              border: 'none',
+              borderRadius: '4px',
+              cursor: 'pointer',
+              fontSize: '13px',
+              fontWeight: '500'
+            }}
+          >
+            Completar
+          </button>
+        )}
         <button
           onClick={() => setIsEditing(true)}
           style={{
             flex: 1,
+            minWidth: '100px',
             padding: '8px',
             background: '#667eea',
             color: 'white',
@@ -352,6 +420,7 @@ export default function AppointmentCard({ appointment, onUpdate, onDelete }: App
           onClick={handleDelete}
           style={{
             flex: 1,
+            minWidth: '100px',
             padding: '8px',
             background: '#ef4444',
             color: 'white',

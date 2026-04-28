@@ -89,6 +89,8 @@ export async function PATCH(
       time?: string
       status?: string
       notes?: string | null
+      reminder24hSentAt?: Date | null
+      reminder2hSentAt?: Date | null
     } = {}
 
     if (body.patientName !== undefined) data.patientName = String(body.patientName).trim()
@@ -100,9 +102,23 @@ export async function PATCH(
         return NextResponse.json({ error: 'Estado no válido' }, { status: 400 })
       }
       data.status = body.status
+      if (body.status === 'cancelled' || body.status === 'completed') {
+        data.reminder24hSentAt = new Date()
+        data.reminder2hSentAt = new Date()
+      }
     }
     if (body.notes !== undefined) {
       data.notes = body.notes === null || body.notes === '' ? null : String(body.notes)
+    }
+
+    const nextStatus = data.status ?? existing.status
+    if (
+      (body.date !== undefined || body.time !== undefined) &&
+      nextStatus !== 'cancelled' &&
+      nextStatus !== 'completed'
+    ) {
+      data.reminder24hSentAt = null
+      data.reminder2hSentAt = null
     }
 
     if (Object.keys(data).length === 0) {
