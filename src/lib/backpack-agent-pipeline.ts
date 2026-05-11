@@ -94,11 +94,20 @@ export function buildBackpackAgentSystemPrompt(parts: {
     parts.customerFacts.trim() ||
     '(Sin datos oficiales cargados. Indica que no tienes ese dato y sugiere contactar a la tienda.)'
   const compactContext = truncateForPrompt(parts.retrievedContext, 950)
-  return `Eres un bot que resuelve dudas y vende mochilas escolares.
-Solo puedes hablar de productos que están en la base de datos y de la información del negocio configurada en la base de datos.
-Responde como vendedor por WhatsApp, cordial y directo. No digas "el usuario quiere saber" ni describas la intención del cliente.
-Si preguntan por productos disponibles, empieza parecido a: "Sí, claro, estos son los modelos que manejamos:" y lista productos por nombre exacto.
-No inventes datos. No expliques tu razonamiento. Respuesta breve.
+  return `Respondes WhatsApp de una tienda de mochilas escolares como una persona de mostrador.
+Tu salida debe ser ÚNICAMENTE el mensaje final que se enviará al cliente.
+No escribas análisis, planes, instrucciones, intención del cliente ni razonamiento.
+No digas que eres bot, IA, vendedor, asistente ni "soy de la tienda".
+No uses frases como: "el usuario quiere", "el cliente pregunta", "debo responder", "mi objetivo", "respuesta a generar".
+Usa solo productos de la base de datos e información del negocio configurada en la base de datos.
+Si preguntan por productos disponibles, responde: "Sí, claro, estos son los modelos que manejamos:" y lista productos por nombre exacto.
+No inventes datos. Sé cordial, directo y natural.
+
+Ejemplos de estilo:
+Cliente: Hola
+Respuesta: Hola, ¿qué modelo o tipo de mochila buscas?
+Cliente: ¿Qué mochilas tienen?
+Respuesta: Sí, claro, estos son los modelos que manejamos:
 
 Info negocio: ${truncateForPrompt(facts, 260)}
 
@@ -114,6 +123,7 @@ function finalCleanup(reply: string): string {
     .replace(/```$/i, '')
     .replace(/^\s*(respuesta|mensaje final|assistant|asistente)\s*:\s*/i, '')
     .trim()
+  t = stripReasoningBeforeFinalAnswer(t)
   const openThink = /<(think|thinking|reasoning|redacted_thinking)>/i
   const m = openThink.exec(t)
   if (m && m.index === 0) {
@@ -124,6 +134,38 @@ function finalCleanup(reply: string): string {
     }
   }
   return limitReplyLines(t)
+}
+
+function stripReasoningBeforeFinalAnswer(text: string): string {
+  const markers = [
+    /(?:^|\n)\s*(?:respuesta|respuesta final|mensaje final)\s*:\s*/i,
+    /(?:^|\n)\s*(?:respuesta a generar)\s*:\s*/i,
+    /(?:^|\n)\s*(?:contestar|responder)\s*:\s*/i
+  ]
+  for (const marker of markers) {
+    const matches = [...text.matchAll(new RegExp(marker.source, `${marker.flags}g`))]
+    const last = matches[matches.length - 1]
+    if (last?.index != null) {
+      const cut = text.slice(last.index + last[0].length).trim()
+      if (cut.length >= 3) return cut
+    }
+  }
+
+  const directStart = text.search(
+    /(?:^|\n|\.)(¡?Hola\b|Sí,\s*claro\b|Claro\b|Tenemos\b|Manejamos\b|Estamos\b|Nuestro horario\b|La dirección\b)/i
+  )
+  if (directStart > 0) {
+    const preamble = text.slice(0, directStart)
+    if (
+      looksLikeMetaNarration(preamble) ||
+      /\b(cordial|direct[ao]|natural|regla|instrucci[oó]n|usando la informaci[oó]n|siguiendo)\b/i.test(
+        preamble
+      )
+    ) {
+      return text.slice(directStart).replace(/^[.\s]+/, '').trim()
+    }
+  }
+  return text
 }
 
 function limitReplyLines(reply: string): string {
@@ -506,8 +548,16 @@ function looksLikeCodeOrInternalOutput(reply: string): boolean {
 }
 
 function looksLikeMetaNarration(reply: string): boolean {
-  return /\b(el usuario|la usuaria|el cliente|la clienta)\s+(quiere|pregunta|solicita|busca|est[aá] pidiendo|desea saber|necesita saber)/i.test(
-    reply
+  return (
+    /\b(el usuario|la usuaria|el cliente|la clienta)\s+(quiere|pregunta|solicita|busca|est[aá] pidiendo|desea saber|necesita saber|inicia|env[ií]o|se quej[oó])/i.test(
+      reply
+    ) ||
+    /\b(el usuario|la usuaria|el cliente|la clienta)\s+est[aá]\s+(preguntando|solicitando|buscando|pidiendo)/i.test(
+      reply
+    ) ||
+    /\b(como vendedor|como asistente|debo responder|debo ser|mi objetivo|plan:|razonamiento|información disponible:|cordial,\s*direct[ao]|siguiendo la regla)/i.test(
+      reply
+    )
   )
 }
 
@@ -518,6 +568,10 @@ function extractPrices(reply: string): string[] {
 }
 
 function validateGroundedReply(reply: string, ctx: GroundedAgentContext): string {
+  if (/^\s*(hola,\s*)?soy\s+(de|el|la)\b/i.test(reply)) {
+    return buildDeterministicGroundedReply(ctx)
+  }
+
   if (looksLikeMetaNarration(reply)) {
     return buildDeterministicGroundedReply(ctx)
   }
@@ -561,7 +615,7 @@ function buildDeterministicGroundedReply(ctx: GroundedAgentContext): string {
       .join('\n')}`
   }
   if (ctx.businessFacts.trim()) {
-    return limitReplyLines(ctx.businessFacts)
+    return limitReplyLines(ctx.businessFacts).replace(/^informaci[oó]n\s+del\s+(local|negocio)\s*[-—:]?\s*/i, '')
   }
   return 'Te puedo ayudar con información de mochilas disponibles. ¿Qué modelo o característica buscas?'
 }
@@ -608,7 +662,7 @@ export async function runBackpackAgentTurn(input: {
     ...historyMessages,
     {
       role: 'user',
-      content: `Cliente: ${userText}\nContesta como vendedor por WhatsApp. No describas lo que quiere el cliente.`
+      content: `Cliente: ${userText}\nEscribe únicamente la respuesta final para el cliente. No expliques qué entendiste ni cómo vas a responder.`
     }
   ]
 

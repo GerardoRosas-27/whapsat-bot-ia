@@ -10,6 +10,7 @@
     "lint": "next lint",
     "bot": "tsx src/bot/whatsapp-bot.ts",
     "bot:backpack": "tsx src/bot/backpack-bot.ts",
+    "clean:backpack-session": "powershell -ExecutionPolicy Bypass -File scripts/clean-backpack-session.ps1",
     "seed:backpack-policy": "tsx scripts/seed-backpack-policy.ts",
     "debug:backpack-llm": "tsx scripts/debug-backpack-llm-conversation.ts",
     "test": "jest",
