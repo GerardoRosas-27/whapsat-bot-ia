@@ -56,6 +56,7 @@ export async function PATCH(
       phoneNumber?: string
       label?: string | null
       isActive?: boolean
+      treatAsCustomer?: boolean
     } = {}
 
     if (body.phoneNumber !== undefined) {
@@ -74,6 +75,9 @@ export async function PATCH(
     }
     if (body.isActive !== undefined) {
       data.isActive = Boolean(body.isActive)
+    }
+    if (body.treatAsCustomer !== undefined) {
+      data.treatAsCustomer = Boolean(body.treatAsCustomer)
     }
 
     if (Object.keys(data).length === 0) {

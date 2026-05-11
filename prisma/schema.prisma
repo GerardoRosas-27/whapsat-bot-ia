@@ -151,6 +151,25 @@ model BackpackBotSession {
   updatedAt   DateTime @updatedAt
 }
 
+model BackpackConversation {
+  id          String                      @id @default(cuid())
+  phoneNumber String                      @unique
+  lastMessage String?
+  createdAt   DateTime                    @default(now())
+  updatedAt   DateTime                    @updatedAt
+  messages    BackpackConversationMessage[]
+}
+
+model BackpackConversationMessage {
+  id             String               @id @default(cuid())
+  conversationId String
+  conversation   BackpackConversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+  role           String               // "user" | "assistant" | "system"
+  body           String
+  messageType    String               @default("text") // text | image | media
+  createdAt      DateTime             @default(now())
+}
+
 model BackpackProduct {
   id          String   @id @default(cuid())
   name        String   // Nombre del producto
@@ -176,12 +195,13 @@ model BackpackBotPolicy {
 }
 
 model BackpackAdminNumber {
-  id          String   @id @default(cuid())
-  phoneNumber String   @unique // Número WhatsApp autorizado para opciones administrativas
-  label       String?  // Nombre o referencia del administrador
-  isActive    Boolean  @default(true)
-  createdAt   DateTime @default(now())
-  updatedAt   DateTime @updatedAt
+  id              String   @id @default(cuid())
+  phoneNumber     String   @unique // Número WhatsApp autorizado para opciones administrativas
+  label           String?  // Nombre o referencia del administrador
+  isActive        Boolean  @default(true)
+  treatAsCustomer Boolean  @default(false) // Si está activo, el admin se atiende como cliente para pruebas
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
 }
 
 model BackpackSoldProductEntry {

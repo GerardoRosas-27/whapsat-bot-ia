@@ -20,7 +20,7 @@ export const MAX_CATALOG_IMAGES_FOR_VISION = Math.min(
 export const DEFAULT_BACKPACK_WORKFLOW = `## Flujo general (respuestas humanas y breves)
 1. **Tono**: Hablas como quien atiende la tienda por WhatsApp: primera persona del plural (*tenemos*, *te puedo comentar*, *nos encontramos en…*). Nunca hables de ti en tercera persona ni digas "el asistente", "el bot" ni "debo analizar".
 2. **Extensión**: Prioriza 2–6 líneas. Lista productos en formato compacto si hay varios.
-3. **Saludo**: Si hace falta, saluda y ofrece *hola* para el menú numérico o que describa qué busca.
+3. **Saludo**: Si hace falta, saluda y pregunta qué modelo, uso o característica busca.
 4. **Búsqueda**: Solo artículos del catálogo; precio y stock exactos.
 5. **Foto**: Si manda imagen, compárala con las referencias visuales y con la lista de modelos que tienen foto. Si es la misma mochila o diseño equivalente a un producto del catálogo, confírmalo con *nombre exacto*, precio y stock. No digas que "no está" si hay coincidencia o similitud clara con una referencia o con un modelo que tiene foto en la lista.
 6. **Tienda**: Horarios y dirección solo según la información oficial del prompt.
@@ -78,10 +78,15 @@ export function pickCatalogReferenceImages(
   maxImages: number = MAX_CATALOG_IMAGES_FOR_VISION
 ): { label: string; dataUrl: string; productId: string }[] {
   const cap = Math.max(0, Math.min(maxImages, MAX_CATALOG_IMAGES_FOR_VISION))
+  return getCatalogReferenceImages(products).slice(0, cap)
+}
+
+export function getCatalogReferenceImages(
+  products: BackpackProduct[]
+): { label: string; dataUrl: string; productId: string }[] {
   const withPath = products.filter((p) => p.imageUrl?.trim())
   const out: { label: string; dataUrl: string; productId: string }[] = []
   for (const p of withPath) {
-    if (out.length >= cap) break
     const dataUrl = tryReadPublicImageAsDataUrl(p.imageUrl)
     if (!dataUrl) continue
     out.push({
@@ -191,14 +196,14 @@ ${parts.rulesForBot.trim() || '(No hay reglas adicionales configuradas en base d
 
 ## Información oficial del negocio (horarios, ubicación, envíos, políticas)
 Úsala para apertura/cierre/ubicación. No inventes datos fuera de este bloque ni del catálogo.
-${parts.customerFacts.trim() || '(Sin datos oficiales cargados: indica que pueden escribir *hola* o contactar al negocio para datos de tienda.)'}
+${parts.customerFacts.trim() || '(Sin datos oficiales cargados: indica que no tienes ese dato confirmado y que pueden contactar al negocio para datos de tienda.)'}
 
 ## Catálogo (única fuente de productos, precios y existencias)
 ${parts.catalogText}
 
 ## Imágenes en este turno
 - Si hay foto del cliente: la primera imagen tras el texto introductorio es la suya; las siguientes son referencias del catálogo.
-- Compara con brevedad; cita nombre y stock del catálogo si aplica.${visionBlock}`
+- Compara con brevedad; si identificas un modelo, cita nombre exacto, precio, stock y si está en existencia según el stock.${visionBlock}`
 }
 
 /**

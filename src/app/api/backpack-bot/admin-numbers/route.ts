@@ -62,7 +62,9 @@ export async function POST(request: NextRequest) {
       data: {
         phoneNumber,
         label: label || null,
-        isActive: body.isActive === undefined ? true : Boolean(body.isActive)
+        isActive: body.isActive === undefined ? true : Boolean(body.isActive),
+        treatAsCustomer:
+          body.treatAsCustomer === undefined ? false : Boolean(body.treatAsCustomer)
       }
     })
 

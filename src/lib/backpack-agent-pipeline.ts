@@ -18,6 +18,8 @@ export type BackpackAgentHistoryTurn = {
 
 export type BackpackAgentPolicySlice = {
   customerFacts: string
+  rulesForBot?: string
+  interactionWorkflow?: string
 }
 
 type AgentScope = 'product' | 'business' | 'mixed' | 'out_of_scope' | 'unknown'
@@ -34,9 +36,9 @@ const MAX_RETRIEVED_PRODUCTS = 8
 const OUT_OF_SCOPE_FALLBACK =
   'Solo te puedo ayudar con información de nuestras mochilas y la tienda. ¿Qué modelo buscas?'
 const UNKNOWN_PRODUCT_FALLBACK =
-  'No encontré ese modelo en nuestro catálogo. Escribe *hola* para ver opciones disponibles.'
+  'No encontré ese modelo en nuestro catálogo. Puedo buscar otro modelo o característica disponible.'
 const UNKNOWN_BUSINESS_FACT_FALLBACK =
-  'No tengo ese dato confirmado. Puedes escribir *hola* para volver al menú o contactar directo a la tienda.'
+  'No tengo ese dato confirmado. Puedes preguntar por otro dato de la tienda o contactar directo al negocio.'
 const MALFORMED_REPLY_FALLBACK =
   'Disculpa, no pude preparar bien la respuesta. ¿Me escribes de nuevo qué mochila buscas?'
 
@@ -83,41 +85,25 @@ export function loadBackpackAgentContext(): string {
 export function buildBackpackAgentSystemPrompt(parts: {
   contextFile: string
   customerFacts: string
+  rulesForBot?: string
+  interactionWorkflow?: string
   catalogText: string
   retrievedContext: string
 }): string {
   const facts =
     parts.customerFacts.trim() ||
     '(Sin datos oficiales cargados. Indica que no tienes ese dato y sugiere contactar a la tienda.)'
-  return `${parts.contextFile.trim()}
+  const compactContext = truncateForPrompt(parts.retrievedContext, 950)
+  return `Eres un bot que resuelve dudas y vende mochilas escolares.
+Solo puedes hablar de productos que están en la base de datos y de la información del negocio configurada en la base de datos.
+Responde como vendedor por WhatsApp, cordial y directo. No digas "el usuario quiere saber" ni describas la intención del cliente.
+Si preguntan por productos disponibles, empieza parecido a: "Sí, claro, estos son los modelos que manejamos:" y lista productos por nombre exacto.
+No inventes datos. No expliques tu razonamiento. Respuesta breve.
 
----
+Info negocio: ${truncateForPrompt(facts, 260)}
 
-## Información oficial del negocio
-${facts}
-
----
-
-## Contexto recuperado para ESTA pregunta (prioridad máxima)
-Usa primero este bloque. Si aquí dice que no hubo coincidencias o que no hay dato oficial, no inventes una respuesta.
-${parts.retrievedContext}
-
----
-
-## Catálogo completo (fuente secundaria, solo si el contexto recuperado lo permite)
-${parts.catalogText}
-
----
-
-## Reglas de alineamiento obligatorias
-- Responde solo sobre venta de mochilas o datos oficiales de la tienda.
-- Si el cliente pide un producto, solo afirma disponibilidad/precio/stock de productos presentes en el contexto recuperado o catálogo.
-- Si no hay coincidencia, di que no lo encontraste y ofrece escribir *hola* para ver opciones. No propongas modelos inventados.
-- Si pide ubicación, horario, envíos, mayoreo o políticas, usa solo "Información oficial del negocio".
-- Respuesta breve: máximo 6 líneas, idealmente 1 a 4.
-- Nada de código, JSON, Markdown de bloque, etiquetas, razonamiento interno ni texto en inglés.
-
-Recordatorio final: responde SOLO con el mensaje para el cliente. Nada de razonamiento, nada de etiquetas, nada en inglés.`
+Productos/datos disponibles:
+${compactContext}`
 }
 
 /** Quita cualquier residuo de razonamiento que haya esquivado el sanitizador base. */
@@ -147,6 +133,12 @@ function limitReplyLines(reply: string): string {
     .filter(Boolean)
   if (lines.length <= 6) return lines.join('\n').trim()
   return lines.slice(0, 6).join('\n').trim()
+}
+
+function truncateForPrompt(text: string, maxChars: number): string {
+  const normalized = text.trim()
+  if (normalized.length <= maxChars) return normalized
+  return `${normalized.slice(0, maxChars).trim()}\n...(recortado)`
 }
 
 function normalizeText(value: string): string {
@@ -226,6 +218,32 @@ const PRODUCT_TERMS = [
   'catalogo',
   'modelo'
 ]
+
+const BROAD_CATALOG_TERMS = [
+  'mochila',
+  'mochilas',
+  'catalogo',
+  'catalogos',
+  'disponible',
+  'disponibles',
+  'existencia',
+  'existencias',
+  'productos',
+  'modelos',
+  'informacion'
+]
+
+const GENERIC_CATALOG_SEARCH_TERMS = new Set([
+  'catalogo',
+  'catalogos',
+  'productos',
+  'modelos',
+  'informacion',
+  'disponible',
+  'disponibles',
+  'existencia',
+  'existencias'
+])
 
 const BUSINESS_TERMS = [
   'ubicacion',
@@ -348,7 +366,10 @@ function scoreProduct(product: BackpackProduct, terms: string[], userText: strin
 
 function retrieveProducts(userText: string, products: BackpackProduct[]): BackpackProduct[] {
   const terms = extractSearchTerms(userText)
-  if (terms.length === 0) {
+  const broadCatalogRequest =
+    terms.length === 0 ||
+    terms.every((term) => GENERIC_CATALOG_SEARCH_TERMS.has(term))
+  if (broadCatalogRequest) {
     return products.slice(0, MAX_RETRIEVED_PRODUCTS)
   }
 
@@ -484,6 +505,12 @@ function looksLikeCodeOrInternalOutput(reply: string): boolean {
   )
 }
 
+function looksLikeMetaNarration(reply: string): boolean {
+  return /\b(el usuario|la usuaria|el cliente|la clienta)\s+(quiere|pregunta|solicita|busca|est[aá] pidiendo|desea saber|necesita saber)/i.test(
+    reply
+  )
+}
+
 function extractPrices(reply: string): string[] {
   return (reply.match(/\$\s*\d+(?:[.,]\d{1,2})?/g) ?? []).map((price) =>
     price.replace(/\s+/g, '').replace(',', '.')
@@ -491,6 +518,10 @@ function extractPrices(reply: string): string[] {
 }
 
 function validateGroundedReply(reply: string, ctx: GroundedAgentContext): string {
+  if (looksLikeMetaNarration(reply)) {
+    return buildDeterministicGroundedReply(ctx)
+  }
+
   if (looksLikeCodeOrInternalOutput(reply)) {
     return MALFORMED_REPLY_FALLBACK
   }
@@ -514,6 +545,25 @@ function validateGroundedReply(reply: string, ctx: GroundedAgentContext): string
   }
 
   return reply
+}
+
+function formatFallbackProductLine(product: BackpackProduct): string {
+  const availability = product.stock > 0 ? 'en existencia' : 'sin existencia'
+  return `*${product.name}*: $${Number(product.price).toFixed(2)} — stock:${product.stock} (${availability})`
+}
+
+function buildDeterministicGroundedReply(ctx: GroundedAgentContext): string {
+  if (ctx.fallbackReply) return ctx.fallbackReply
+  if (ctx.products.length > 0) {
+    return `Sí, claro, estos son los modelos que manejamos:\n${ctx.products
+      .slice(0, 3)
+      .map(formatFallbackProductLine)
+      .join('\n')}`
+  }
+  if (ctx.businessFacts.trim()) {
+    return limitReplyLines(ctx.businessFacts)
+  }
+  return 'Te puedo ayudar con información de mochilas disponibles. ¿Qué modelo o característica buscas?'
 }
 
 /** Un turno del asistente IA (solo texto, sin visión). */
@@ -542,11 +592,13 @@ export async function runBackpackAgentTurn(input: {
   const systemPrompt = buildBackpackAgentSystemPrompt({
     contextFile,
     customerFacts: input.policy.customerFacts,
+    rulesForBot: input.policy.rulesForBot,
+    interactionWorkflow: input.policy.interactionWorkflow,
     catalogText,
     retrievedContext: formatGroundedContext(groundedContext)
   })
 
-  const historyMessages: LlmMessage[] = input.history.map((t) => ({
+  const historyMessages: LlmMessage[] = input.history.slice(-4).map((t) => ({
     role: t.role,
     content: t.content
   }))
@@ -556,20 +608,24 @@ export async function runBackpackAgentTurn(input: {
     ...historyMessages,
     {
       role: 'user',
-      content: `Cliente: ${userText}
-
-Contexto recuperado:
-${formatGroundedContext(groundedContext)}
-
-Responde SOLO con el texto para WhatsApp, sin preámbulos, sin código y sin razonamiento.`
+      content: `Cliente: ${userText}\nContesta como vendedor por WhatsApp. No describas lo que quiere el cliente.`
     }
   ]
 
-  let reply = await backpackLlmChat({
-    messages,
-    temperature: input.temperature ?? 0.2,
-    maxTokens: getLlmMaxResponseTokens()
-  })
+  let reply: string
+  try {
+    reply = await backpackLlmChat({
+      messages,
+      temperature: input.temperature ?? 0.2,
+      maxTokens: getLlmMaxResponseTokens()
+    })
+  } catch (error) {
+    console.warn(
+      '[BackpackAgent] LLM no devolvió respuesta útil; usando respuesta basada en BD:',
+      error instanceof Error ? error.message : error
+    )
+    return buildDeterministicGroundedReply(groundedContext)
+  }
   reply = sanitizeLlmReplyForCustomer(reply)
   reply = finalCleanup(reply)
   reply = validateGroundedReply(reply, groundedContext)

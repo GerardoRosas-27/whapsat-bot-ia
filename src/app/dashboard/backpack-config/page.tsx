@@ -5,11 +5,13 @@ import { useRouter } from 'next/navigation'
 import {
   BackpackAdminNumbersManager,
   BackpackBotPolicyManager,
+  BackpackCompanyDataManager,
+  BackpackConversationsManager,
   BackpackProductsManager,
   BotStatusBackpack
 } from '@/modules/backpack/ui'
 
-type BackpackTab = 'status' | 'rules' | 'products' | 'admins'
+type BackpackTab = 'status' | 'rules' | 'company' | 'products' | 'conversations' | 'admins'
 
 export default function BackpackConfigPage() {
   const router = useRouter()
@@ -135,8 +137,10 @@ export default function BackpackConfigPage() {
           {(
             [
               { id: 'status' as const, label: 'Estado del bot' },
-              { id: 'rules' as const, label: 'Reglas e información' },
+              { id: 'rules' as const, label: 'Instrucciones IA' },
+              { id: 'company' as const, label: 'Datos de empresa' },
               { id: 'products' as const, label: 'Productos' },
+              { id: 'conversations' as const, label: 'Conversaciones' },
               { id: 'admins' as const, label: 'Admins del bot' }
             ] as const
           ).map((tab) => (
@@ -163,7 +167,9 @@ export default function BackpackConfigPage() {
 
         {activeTab === 'status' && <BotStatusBackpack />}
         {activeTab === 'rules' && <BackpackBotPolicyManager />}
+        {activeTab === 'company' && <BackpackCompanyDataManager />}
         {activeTab === 'products' && <BackpackProductsManager />}
+        {activeTab === 'conversations' && <BackpackConversationsManager />}
         {activeTab === 'admins' && <BackpackAdminNumbersManager />}
       </main>
     </div>

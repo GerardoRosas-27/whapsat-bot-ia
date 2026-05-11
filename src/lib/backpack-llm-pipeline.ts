@@ -9,9 +9,9 @@ import {
   buildBackpackUserPayload,
   formatCatalogForPrompt,
   formatProductsWithPhotosForVision,
+  getCatalogReferenceImages,
   looksLikeDeniedCatalogVisualMatch,
   MAX_CATALOG_IMAGES_FOR_VISION,
-  pickCatalogReferenceImages,
   replyMentionsAnyProductName,
   sanitizeLlmReplyForCustomer
 } from './backpack-llm-context'
@@ -49,21 +49,14 @@ export async function runBackpackLlmTurn(input: {
     content: t.content
   }))
 
-  const capsForVision = userImg
-    ? [...new Set([
-        Math.min(6, MAX_CATALOG_IMAGES_FOR_VISION),
-        Math.min(3, MAX_CATALOG_IMAGES_FOR_VISION),
-        2,
-        1,
-        0
-      ])].sort((a, b) => b - a)
-    : [0]
+  const catalogImageBatches = userImg
+    ? chunkCatalogImages(getCatalogReferenceImages(input.products))
+    : [[]]
 
+  let lastReply = ''
   let lastErr: unknown
-  for (const maxCat of capsForVision) {
-    const catalogReferenceImages = userImg
-      ? pickCatalogReferenceImages(input.products, maxCat)
-      : []
+  for (let batchIndex = 0; batchIndex < catalogImageBatches.length; batchIndex += 1) {
+    const catalogReferenceImages = catalogImageBatches[batchIndex]
 
     const systemPrompt = buildBackpackSystemPrompt({
       workflow: input.policy.interactionWorkflow,
@@ -133,24 +126,45 @@ export async function runBackpackLlmTurn(input: {
         }
       }
 
-      if (userImg && maxCat < MAX_CATALOG_IMAGES_FOR_VISION) {
+      if (userImg) {
         console.log(
-          `[BackpackLLM] OK con ${maxCat} imágenes de catálogo (reintento tras fallo)`
+          `[BackpackLLM] Revisión visual ${batchIndex + 1}/${catalogImageBatches.length} con ${catalogReferenceImages.length} imagen(es) de catálogo`
         )
       }
-      return reply
+      lastReply = reply
+      if (
+        !userImg ||
+        replyMentionsAnyProductName(reply, input.products) ||
+        catalogImageBatches.length === 1
+      ) {
+        return reply
+      }
     } catch (e) {
       lastErr = e
       console.warn(
-        `[BackpackLLM] Error con hasta ${maxCat} fotos de catálogo (+ foto cliente). Probando menos…`,
+        `[BackpackLLM] Error en revisión visual ${batchIndex + 1}/${catalogImageBatches.length} con ${catalogReferenceImages.length} foto(s) de catálogo. Probando la siguiente tanda…`,
         e instanceof Error ? e.message : e
       )
     }
   }
 
+  if (lastReply) {
+    return lastReply
+  }
+
   throw lastErr instanceof Error
     ? lastErr
     : new Error(String(lastErr))
+}
+
+function chunkCatalogImages<T>(items: T[]): T[][] {
+  const size = Math.max(1, MAX_CATALOG_IMAGES_FOR_VISION)
+  if (items.length === 0) return [[]]
+  const chunks: T[][] = []
+  for (let i = 0; i < items.length; i += size) {
+    chunks.push(items.slice(i, i + size))
+  }
+  return chunks
 }
 
 /** PNG 1×1 para pruebas (no usar en producción). */

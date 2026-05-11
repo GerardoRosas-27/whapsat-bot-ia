@@ -2,10 +2,10 @@
 
 import { useEffect, useState } from 'react'
 
-export default function BackpackBotPolicyManager() {
+export default function BackpackCompanyDataManager() {
   const [rulesForBot, setRulesForBot] = useState('')
-  const [customerFacts, setCustomerFacts] = useState('')
   const [interactionWorkflow, setInteractionWorkflow] = useState('')
+  const [customerFacts, setCustomerFacts] = useState('')
   const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState(false)
   const [updatedAt, setUpdatedAt] = useState<string | null>(null)
@@ -25,8 +25,8 @@ export default function BackpackBotPolicyManager() {
         return
       }
       setRulesForBot(data.rulesForBot ?? '')
-      setCustomerFacts(data.customerFacts ?? '')
       setInteractionWorkflow(data.interactionWorkflow ?? '')
+      setCustomerFacts(data.customerFacts ?? '')
       if (data.updatedAt) setUpdatedAt(data.updatedAt)
     } catch {
       setMessage({ type: 'err', text: 'Error de conexión' })
@@ -52,8 +52,8 @@ export default function BackpackBotPolicyManager() {
         },
         body: JSON.stringify({
           rulesForBot,
-          customerFacts,
-          interactionWorkflow
+          interactionWorkflow,
+          customerFacts
         })
       })
       const data = await res.json().catch(() => ({}))
@@ -62,10 +62,10 @@ export default function BackpackBotPolicyManager() {
         return
       }
       setRulesForBot(data.rulesForBot ?? '')
-      setCustomerFacts(data.customerFacts ?? '')
       setInteractionWorkflow(data.interactionWorkflow ?? '')
+      setCustomerFacts(data.customerFacts ?? '')
       if (data.updatedAt) setUpdatedAt(data.updatedAt)
-      setMessage({ type: 'ok', text: 'Guardado correctamente.' })
+      setMessage({ type: 'ok', text: 'Datos de empresa guardados correctamente.' })
     } catch {
       setMessage({ type: 'err', text: 'Error de conexión' })
     } finally {
@@ -76,7 +76,7 @@ export default function BackpackBotPolicyManager() {
   if (loading) {
     return (
       <div style={{ padding: '24px', background: 'white', borderRadius: '8px', boxShadow: '0 1px 3px rgba(0,0,0,0.08)' }}>
-        <p style={{ margin: 0, color: '#64748b' }}>Cargando reglas e información…</p>
+        <p style={{ margin: 0, color: '#64748b' }}>Cargando datos de empresa...</p>
       </div>
     )
   }
@@ -84,10 +84,10 @@ export default function BackpackBotPolicyManager() {
   return (
     <div style={{ padding: '24px', background: 'white', borderRadius: '8px', boxShadow: '0 1px 3px rgba(0,0,0,0.08)' }}>
       <h2 style={{ margin: '0 0 8px', fontSize: '18px', color: '#0f172a' }}>
-        Instrucciones del bot
+        Datos de empresa para el bot
       </h2>
       <p style={{ margin: '0 0 20px', fontSize: '14px', color: '#64748b', lineHeight: 1.5 }}>
-        El bot de mochilas contesta por defecto con el modelo local. Estas instrucciones se combinan con el archivo de contexto, los datos de empresa y el catálogo guardado en base de datos.
+        Esta información se guarda en la base de datos y el LLM local la usa como fuente oficial para horarios, ubicación, envíos, mayoreo, pagos, contacto y políticas.
       </p>
 
       {message && (
@@ -106,16 +106,16 @@ export default function BackpackBotPolicyManager() {
       )}
 
       <label style={{ display: 'block', marginBottom: '8px', fontWeight: 600, fontSize: '14px', color: '#334155' }}>
-        Flujo de trabajo (guardado en base de datos)
+        Información oficial de la empresa
       </label>
       <p style={{ margin: '0 0 8px', fontSize: '13px', color: '#94a3b8' }}>
-        Describe prioridades de respuesta. Evita menús públicos: el modelo debe contestar directo usando catálogo y datos oficiales.
+        Escribe solo datos confirmados. Si un dato no está aquí, el bot contestará que no lo tiene confirmado.
       </p>
       <textarea
-        value={interactionWorkflow}
-        onChange={(e) => setInteractionWorkflow(e.target.value)}
-        rows={10}
-        placeholder="Ej.: 1) Saludar cordialmente. 2) Buscar primero en la base de datos. 3) Responder con datos confirmados del producto. 4) Si no existe, decirlo sin inventar."
+        value={customerFacts}
+        onChange={(e) => setCustomerFacts(e.target.value)}
+        rows={14}
+        placeholder={`Ejemplo:\nHorario: lunes a domingo de 10:30 a 19:30.\nUbicación: ...\nEnvíos: solo por mayoreo.\nPagos: efectivo y transferencia.\nPolíticas: ...`}
         style={{
           width: '100%',
           maxWidth: '100%',
@@ -125,32 +125,7 @@ export default function BackpackBotPolicyManager() {
           border: '1px solid #e2e8f0',
           fontSize: '14px',
           fontFamily: 'inherit',
-          marginBottom: '20px',
-          resize: 'vertical'
-        }}
-      />
-
-      <label style={{ display: 'block', marginBottom: '8px', fontWeight: 600, fontSize: '14px', color: '#334155' }}>
-        Reglas / instrucciones para el bot (system prompt)
-      </label>
-      <p style={{ margin: '0 0 8px', fontSize: '13px', color: '#94a3b8' }}>
-        Límites, tono y reglas para no inventar información. Se inyectan en el system prompt del LLM local.
-      </p>
-      <textarea
-        value={rulesForBot}
-        onChange={(e) => setRulesForBot(e.target.value)}
-        rows={8}
-        placeholder={`Ejemplo:\n- Solo informar productos que existan en el catálogo publicado.\n- No prometer fechas de envío sin confirmar.\n- Si preguntan por menudeo, aclarar que solo hay envíos por mayoreo.`}
-        style={{
-          width: '100%',
-          maxWidth: '100%',
-          boxSizing: 'border-box',
-          padding: '12px',
-          borderRadius: '6px',
-          border: '1px solid #e2e8f0',
-          fontSize: '14px',
-          fontFamily: 'inherit',
-          marginBottom: '20px',
+          marginBottom: '16px',
           resize: 'vertical'
         }}
       />
@@ -171,7 +146,7 @@ export default function BackpackBotPolicyManager() {
             fontSize: '14px'
           }}
         >
-          {saving ? 'Guardando…' : 'Guardar'}
+          {saving ? 'Guardando...' : 'Guardar datos'}
         </button>
         {updatedAt && (
           <span style={{ fontSize: '13px', color: '#94a3b8' }}>

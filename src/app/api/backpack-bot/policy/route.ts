@@ -55,14 +55,15 @@ export async function PUT(request: NextRequest) {
     }
 
     const body = await request.json()
+    const current = await getOrCreatePolicy()
     const rulesForBot =
-      typeof body.rulesForBot === 'string' ? body.rulesForBot : ''
+      typeof body.rulesForBot === 'string' ? body.rulesForBot : current.rulesForBot
     const customerFacts =
-      typeof body.customerFacts === 'string' ? body.customerFacts : ''
+      typeof body.customerFacts === 'string' ? body.customerFacts : current.customerFacts
     const interactionWorkflow =
       typeof body.interactionWorkflow === 'string'
         ? body.interactionWorkflow
-        : ''
+        : current.interactionWorkflow
 
     const policy = await prisma.backpackBotPolicy.upsert({
       where: { id: POLICY_ID },

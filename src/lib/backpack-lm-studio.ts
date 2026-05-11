@@ -53,6 +53,11 @@ function getLlmRequestTimeoutMs(): number {
   return Number.isFinite(n) && n >= 30_000 ? Math.min(n, 600_000) : 180_000
 }
 
+function shouldDisableReasoning(): boolean {
+  const v = process.env.BACKPACK_LLM_DISABLE_REASONING?.toLowerCase().trim()
+  return v !== 'false' && v !== '0' && v !== 'no' && v !== 'off'
+}
+
 export async function backpackLlmChat(params: {
   messages: LlmMessage[]
   temperature?: number
@@ -75,6 +80,13 @@ export async function backpackLlmChat(params: {
     body.max_tokens = getLlmMaxResponseTokens()
   } else {
     body.max_tokens = params.maxTokens
+  }
+
+  if (shouldDisableReasoning()) {
+    body.reasoning_effort = 'none'
+    body.reasoning = { effort: 'none' }
+    body.include_reasoning = false
+    body.return_reasoning = false
   }
 
   const headers: Record<string, string> = {
