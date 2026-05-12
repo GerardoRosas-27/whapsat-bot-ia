@@ -29,18 +29,14 @@ export async function GET(request: NextRequest) {
     let qrDataUrl: string | null = null
 
     if (isReady && client) {
-      try {
-        info = await client.getState()
-        const wid = client.info?.wid
-        phoneNumber =
-          typeof wid?.user === 'string'
-            ? wid.user
-            : typeof wid?._serialized === 'string'
-              ? wid._serialized.split('@')[0] || null
-              : null
-      } catch (error) {
-        console.error('Error obteniendo información del backpack bot:', error)
-      }
+      info = 'CONNECTED'
+      const wid = client.info?.wid
+      phoneNumber =
+        typeof wid?.user === 'string'
+          ? wid.user
+          : typeof wid?._serialized === 'string'
+            ? wid._serialized.split('@')[0] || null
+            : null
     }
 
     if (qr) {

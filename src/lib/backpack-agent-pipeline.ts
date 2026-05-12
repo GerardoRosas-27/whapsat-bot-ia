@@ -100,6 +100,7 @@ No escribas análisis, planes, instrucciones, intención del cliente ni razonami
 No digas que eres bot, IA, vendedor, asistente ni "soy de la tienda".
 No uses frases como: "el usuario quiere", "el cliente pregunta", "debo responder", "mi objetivo", "respuesta a generar".
 Usa solo productos de la base de datos e información del negocio configurada en la base de datos.
+Si preguntan ubicación, dirección o cómo llegar, incluye el enlace de Google Maps si aparece en la información oficial y menciona que enviarás el croquis si está disponible.
 Si preguntan por productos disponibles, responde: "Sí, claro, estos son los modelos que manejamos:" y lista productos por nombre exacto.
 No inventes datos. Sé cordial, directo y natural.
 
@@ -290,6 +291,10 @@ const GENERIC_CATALOG_SEARCH_TERMS = new Set([
 const BUSINESS_TERMS = [
   'ubicacion',
   'direccion',
+  'maps',
+  'google',
+  'croquis',
+  'llegar',
   'donde',
   'local',
   'plaza',

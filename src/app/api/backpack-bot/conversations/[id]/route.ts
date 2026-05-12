@@ -6,6 +6,18 @@ function requireAdmin(user: ReturnType<typeof verifyToken>) {
   return user?.role === 'admin'
 }
 
+function resolveProductImageUrl(
+  body: string,
+  products: { name: string; imageUrl: string | null }[]
+): string | null {
+  const lowerBody = body.toLowerCase()
+  const matched = products.find((product) => {
+    const name = product.name?.trim()
+    return Boolean(name && product.imageUrl?.trim() && lowerBody.includes(name.toLowerCase()))
+  })
+  return matched?.imageUrl?.trim() || null
+}
+
 async function resolveId(
   request: NextRequest,
   params: Promise<{ id: string }> | { id: string }
@@ -51,7 +63,30 @@ export async function GET(
       return NextResponse.json({ error: 'Conversación no encontrada' }, { status: 404 })
     }
 
-    return NextResponse.json({ conversation })
+    const imageMessagesWithoutUrl = conversation.messages.some(
+      (message) => message.messageType === 'image' && !message.mediaUrl
+    )
+    if (!imageMessagesWithoutUrl) {
+      return NextResponse.json({ conversation })
+    }
+
+    const products = await prisma.backpackProduct.findMany({
+      select: { name: true, imageUrl: true },
+      where: { imageUrl: { not: null } }
+    })
+    const enrichedConversation = {
+      ...conversation,
+      messages: conversation.messages.map((message) => ({
+        ...message,
+        mediaUrl:
+          message.mediaUrl ||
+          (message.messageType === 'image'
+            ? resolveProductImageUrl(message.body, products)
+            : null)
+      }))
+    }
+
+    return NextResponse.json({ conversation: enrichedConversation })
   } catch (error) {
     console.error('Error obteniendo conversación mochila:', error)
     return NextResponse.json({ error: 'Error interno del servidor' }, { status: 500 })

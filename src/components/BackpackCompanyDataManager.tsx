@@ -1,13 +1,16 @@
 'use client'
 
-import { useEffect, useState } from 'react'
+import { type ChangeEvent, useEffect, useState } from 'react'
 
 export default function BackpackCompanyDataManager() {
   const [rulesForBot, setRulesForBot] = useState('')
   const [interactionWorkflow, setInteractionWorkflow] = useState('')
   const [customerFacts, setCustomerFacts] = useState('')
+  const [googleMapsUrl, setGoogleMapsUrl] = useState('')
+  const [sketchImageUrl, setSketchImageUrl] = useState('')
   const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState(false)
+  const [uploadingSketch, setUploadingSketch] = useState(false)
   const [updatedAt, setUpdatedAt] = useState<string | null>(null)
   const [message, setMessage] = useState<{ type: 'ok' | 'err'; text: string } | null>(null)
 
@@ -27,6 +30,8 @@ export default function BackpackCompanyDataManager() {
       setRulesForBot(data.rulesForBot ?? '')
       setInteractionWorkflow(data.interactionWorkflow ?? '')
       setCustomerFacts(data.customerFacts ?? '')
+      setGoogleMapsUrl(data.googleMapsUrl ?? '')
+      setSketchImageUrl(data.sketchImageUrl ?? '')
       if (data.updatedAt) setUpdatedAt(data.updatedAt)
     } catch {
       setMessage({ type: 'err', text: 'Error de conexión' })
@@ -53,7 +58,9 @@ export default function BackpackCompanyDataManager() {
         body: JSON.stringify({
           rulesForBot,
           interactionWorkflow,
-          customerFacts
+          customerFacts,
+          googleMapsUrl,
+          sketchImageUrl
         })
       })
       const data = await res.json().catch(() => ({}))
@@ -64,12 +71,44 @@ export default function BackpackCompanyDataManager() {
       setRulesForBot(data.rulesForBot ?? '')
       setInteractionWorkflow(data.interactionWorkflow ?? '')
       setCustomerFacts(data.customerFacts ?? '')
+      setGoogleMapsUrl(data.googleMapsUrl ?? '')
+      setSketchImageUrl(data.sketchImageUrl ?? '')
       if (data.updatedAt) setUpdatedAt(data.updatedAt)
       setMessage({ type: 'ok', text: 'Datos de empresa guardados correctamente.' })
     } catch {
       setMessage({ type: 'err', text: 'Error de conexión' })
     } finally {
       setSaving(false)
+    }
+  }
+
+  const handleSketchImageUpload = async (e: ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0]
+    if (!file || !file.type.startsWith('image/')) return
+    const token = localStorage.getItem('token')
+    if (!token) return
+    setUploadingSketch(true)
+    setMessage(null)
+    try {
+      const form = new FormData()
+      form.append('file', file)
+      const res = await fetch('/api/backpack-bot/upload', {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${token}` },
+        body: form
+      })
+      const data = await res.json().catch(() => ({}))
+      if (!res.ok || !data.url) {
+        setMessage({ type: 'err', text: data.error || 'Error al subir el croquis' })
+        return
+      }
+      setSketchImageUrl(data.url)
+      setMessage({ type: 'ok', text: 'Croquis subido. Recuerda guardar los datos.' })
+    } catch {
+      setMessage({ type: 'err', text: 'Error al subir el croquis' })
+    } finally {
+      setUploadingSketch(false)
+      e.target.value = ''
     }
   }
 
@@ -104,6 +143,70 @@ export default function BackpackCompanyDataManager() {
           {message.text}
         </div>
       )}
+
+      <label style={{ display: 'block', marginBottom: '8px', fontWeight: 600, fontSize: '14px', color: '#334155' }}>
+        Enlace de Google Maps
+      </label>
+      <input
+        type="url"
+        inputMode="url"
+        value={googleMapsUrl}
+        onChange={(e) => setGoogleMapsUrl(e.target.value)}
+        placeholder="https://maps.google.com/..."
+        style={{
+          width: '100%',
+          maxWidth: '100%',
+          boxSizing: 'border-box',
+          padding: '10px 12px',
+          borderRadius: '6px',
+          border: '1px solid #e2e8f0',
+          fontSize: '14px',
+          marginBottom: '16px'
+        }}
+      />
+
+      <label style={{ display: 'block', marginBottom: '8px', fontWeight: 600, fontSize: '14px', color: '#334155' }}>
+        Foto del croquis
+      </label>
+      <div style={{ marginBottom: '18px', display: 'flex', flexDirection: 'column', gap: '8px' }}>
+        <input
+          type="file"
+          accept="image/jpeg,image/png,image/webp,image/gif"
+          onChange={handleSketchImageUpload}
+          disabled={uploadingSketch}
+          style={{ maxWidth: '320px' }}
+        />
+        {uploadingSketch && (
+          <span style={{ fontSize: '13px', color: '#64748b' }}>Subiendo y optimizando...</span>
+        )}
+        <input
+          type="text"
+          inputMode="url"
+          autoComplete="off"
+          value={sketchImageUrl}
+          onChange={(e) => setSketchImageUrl(e.target.value)}
+          placeholder="/uploads/products/... o https://..."
+          style={{
+            width: '100%',
+            maxWidth: '100%',
+            boxSizing: 'border-box',
+            padding: '10px 12px',
+            borderRadius: '6px',
+            border: '1px solid #e2e8f0',
+            fontSize: '14px'
+          }}
+        />
+        <span style={{ fontSize: '12px', color: '#94a3b8' }}>
+          Se reutiliza el mismo cargador de imágenes del catálogo. El bot enviará esta imagen cuando responda ubicación/dirección.
+        </span>
+        {sketchImageUrl && (
+          <img
+            src={sketchImageUrl}
+            alt="Vista previa del croquis"
+            style={{ maxWidth: '220px', maxHeight: '160px', objectFit: 'contain', border: '1px solid #e2e8f0', borderRadius: '8px' }}
+          />
+        )}
+      </div>
 
       <label style={{ display: 'block', marginBottom: '8px', fontWeight: 600, fontSize: '14px', color: '#334155' }}>
         Información oficial de la empresa

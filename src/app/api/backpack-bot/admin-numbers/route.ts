@@ -64,7 +64,8 @@ export async function POST(request: NextRequest) {
         label: label || null,
         isActive: body.isActive === undefined ? true : Boolean(body.isActive),
         treatAsCustomer:
-          body.treatAsCustomer === undefined ? false : Boolean(body.treatAsCustomer)
+          body.treatAsCustomer === undefined ? false : Boolean(body.treatAsCustomer),
+        muteBot: body.muteBot === undefined ? false : Boolean(body.muteBot)
       }
     })
 

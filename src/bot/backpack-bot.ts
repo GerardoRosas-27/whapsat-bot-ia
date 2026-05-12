@@ -1,6 +1,8 @@
 import 'dotenv/config'
 import fs from 'fs'
 import path from 'path'
+import { createHash } from 'crypto'
+import sharp from 'sharp'
 import { Client, Message, MessageMedia } from 'whatsapp-web.js'
 import qrcode from 'qrcode-terminal'
 import { prisma } from '../lib/prisma'
@@ -38,6 +40,11 @@ interface BackpackUserSession {
   updatedAt: Date
 }
 
+type UserImageAttachment = {
+  dataUrl: string
+  mediaUrl: string | null
+}
+
 /** Palabras que cierran el modo administrativo de captura de ventas. */
 const AGENT_EXIT_COMMANDS = new Set([
   'menu',
@@ -66,6 +73,8 @@ class BackpackWhatsAppBot {
     rulesForBot: string
     customerFacts: string
     interactionWorkflow: string
+    googleMapsUrl: string | null
+    sketchImageUrl: string | null
     fetchedAt: number
   } | null = null
 
@@ -141,6 +150,7 @@ class BackpackWhatsAppBot {
     role: 'user' | 'assistant' | 'system'
     body: string
     messageType?: string
+    mediaUrl?: string | null
   }) {
     const body = input.body.trim()
     if (!body) return
@@ -160,7 +170,8 @@ class BackpackWhatsAppBot {
           conversationId: conversation.id,
           role: input.role,
           body: body.slice(0, 4000),
-          messageType: input.messageType ?? 'text'
+          messageType: input.messageType ?? 'text',
+          mediaUrl: input.mediaUrl?.trim() || null
         }
       })
     } catch (error) {
@@ -237,22 +248,59 @@ class BackpackWhatsAppBot {
     return phoneNumber.replace(/\D/g, '')
   }
 
-  private async isAdminPhoneNumber(phoneNumber: string): Promise<boolean> {
+  private getPhoneNumberVariants(phoneNumber: string): string[] {
     const normalized = this.normalizePhoneNumber(phoneNumber)
-    if (!normalized) return false
-    const adminNumber = await prisma.backpackAdminNumber.findUnique({
-      where: { phoneNumber: normalized }
+    const variants = new Set<string>()
+    if (normalized) variants.add(normalized)
+
+    // WhatsApp en México a veces entrega 521 + 10 dígitos, mientras que
+    // los usuarios suelen guardar 52 + 10 dígitos o solo los 10 dígitos.
+    if (normalized.startsWith('521') && normalized.length === 13) {
+      variants.add(`52${normalized.slice(3)}`)
+      variants.add(normalized.slice(3))
+    }
+    if (normalized.startsWith('52') && normalized.length === 12) {
+      variants.add(`521${normalized.slice(2)}`)
+      variants.add(normalized.slice(2))
+    }
+    if (normalized.length > 10) {
+      variants.add(normalized.slice(-10))
+    }
+
+    return [...variants].filter(Boolean)
+  }
+
+  private async findAdminNumberByPhone(phoneNumber: string) {
+    const variants = this.getPhoneNumberVariants(phoneNumber)
+    if (variants.length === 0) return null
+
+    const direct = await prisma.backpackAdminNumber.findFirst({
+      where: { phoneNumber: { in: variants } }
     })
+    if (direct) return direct
+
+    const rows = await prisma.backpackAdminNumber.findMany()
+    return (
+      rows.find((row) => {
+        const rowVariants = this.getPhoneNumberVariants(row.phoneNumber)
+        return rowVariants.some((variant) => variants.includes(variant))
+      }) ?? null
+    )
+  }
+
+  private async isAdminPhoneNumber(phoneNumber: string): Promise<boolean> {
+    const adminNumber = await this.findAdminNumberByPhone(phoneNumber)
     return Boolean(adminNumber?.isActive && !adminNumber.treatAsCustomer)
   }
 
   private async isSelfTestCustomerPhoneNumber(phoneNumber: string): Promise<boolean> {
-    const normalized = this.normalizePhoneNumber(phoneNumber)
-    if (!normalized) return false
-    const adminNumber = await prisma.backpackAdminNumber.findUnique({
-      where: { phoneNumber: normalized }
-    })
+    const adminNumber = await this.findAdminNumberByPhone(phoneNumber)
     return Boolean(adminNumber?.isActive && adminNumber.treatAsCustomer)
+  }
+
+  private async shouldMuteBotForPhoneNumber(phoneNumber: string): Promise<boolean> {
+    const adminNumber = await this.findAdminNumberByPhone(phoneNumber)
+    return Boolean(adminNumber?.isActive && adminNumber.muteBot)
   }
 
   private rememberBotSelfMessage(text: string | null | undefined): void {
@@ -307,6 +355,8 @@ class BackpackWhatsAppBot {
     rulesForBot: string
     customerFacts: string
     interactionWorkflow: string
+    googleMapsUrl: string | null
+    sketchImageUrl: string | null
   }> {
     const now = Date.now()
     if (
@@ -316,28 +366,71 @@ class BackpackWhatsAppBot {
       return {
         rulesForBot: this.policyCache.rulesForBot,
         customerFacts: this.policyCache.customerFacts,
-        interactionWorkflow: this.policyCache.interactionWorkflow
+        interactionWorkflow: this.policyCache.interactionWorkflow,
+        googleMapsUrl: this.policyCache.googleMapsUrl,
+        sketchImageUrl: this.policyCache.sketchImageUrl
       }
     }
     const row = await prisma.backpackBotPolicy.findUnique({
       where: { id: 'singleton' }
     })
     const rulesForBot = row?.rulesForBot?.trim() ?? ''
-    const customerFacts = row?.customerFacts?.trim() ?? ''
+    const googleMapsUrl = row?.googleMapsUrl?.trim() || null
+    const sketchImageUrl = row?.sketchImageUrl?.trim() || null
+    const locationFacts = [
+      googleMapsUrl ? `Ubicación - Google Maps: ${googleMapsUrl}` : '',
+      sketchImageUrl ? `Ubicación - croquis disponible para enviar: ${sketchImageUrl}` : ''
+    ].filter(Boolean)
+    const customerFacts = [row?.customerFacts?.trim() ?? '', ...locationFacts]
+      .filter(Boolean)
+      .join('\n')
     const interactionWorkflow = row?.interactionWorkflow?.trim() ?? ''
     this.policyCache = {
       rulesForBot,
       customerFacts,
       interactionWorkflow,
+      googleMapsUrl,
+      sketchImageUrl,
       fetchedAt: now
     }
-    return { rulesForBot, customerFacts, interactionWorkflow }
+    return { rulesForBot, customerFacts, interactionWorkflow, googleMapsUrl, sketchImageUrl }
   }
 
   private static readonly WHATSAPP_REPLY_MAX = 3900
 
-  /** Descarga imagen del mensaje de WhatsApp (si aplica). */
-  private async extractUserImageDataUrl(message: Message): Promise<string | null> {
+  private async saveMessageImageOnce(media: MessageMedia): Promise<string | null> {
+    try {
+      const source = Buffer.from(media.data, 'base64')
+      let output: Buffer<ArrayBufferLike> = source
+      let extension = media.mimetype?.split('/')[1]?.replace(/[^a-z0-9]/gi, '') || 'bin'
+      try {
+        output = await sharp(source)
+          .rotate()
+          .resize(1600, 1600, { fit: 'inside', withoutEnlargement: true })
+          .webp({ quality: 82 })
+          .toBuffer()
+        extension = 'webp'
+      } catch (error) {
+        console.warn('[BackpackBot] No se pudo optimizar imagen de historial:', error)
+      }
+
+      const hash = createHash('sha256').update(output).digest('hex')
+      const dir = path.join(process.cwd(), 'public', 'uploads', 'backpack-message-media')
+      fs.mkdirSync(dir, { recursive: true })
+      const filename = `${hash}.${extension}`
+      const filePath = path.join(dir, filename)
+      if (!fs.existsSync(filePath)) {
+        fs.writeFileSync(filePath, output)
+      }
+      return `/uploads/backpack-message-media/${filename}`
+    } catch (error) {
+      console.error('[BackpackBot] Error guardando imagen de historial:', error)
+      return null
+    }
+  }
+
+  /** Descarga imagen del mensaje de WhatsApp (si aplica) y guarda una URL reutilizable. */
+  private async extractUserImageAttachment(message: Message): Promise<UserImageAttachment | null> {
     const t = message.type
     if (!message.hasMedia) {
       if (t === 'image' || t === 'sticker') {
@@ -360,10 +453,11 @@ class BackpackWhatsAppBot {
         return null
       }
       const dataUrl = `data:${media.mimetype};base64,${media.data}`
+      const mediaUrl = await this.saveMessageImageOnce(media)
       console.log(
         `[BackpackBot] Imagen lista para LLM (${media.mimetype}, ${media.data?.length ?? 0} chars base64)`
       )
-      return dataUrl
+      return { dataUrl, mediaUrl }
     } catch (e) {
       console.error('[BackpackBot] Error descargando imagen:', e)
       return null
@@ -410,6 +504,128 @@ class BackpackWhatsAppBot {
     if (!imageUrl || !imageUrl.trim()) return null
     const u = imageUrl.trim()
     return u.startsWith('http') ? u : `${APP_BASE_URL.replace(/\/$/, '')}${u.startsWith('/') ? u : `/${u}`}`
+  }
+
+  private getLocalPublicImagePath(imageUrl: string | null): string | null {
+    if (!imageUrl || !imageUrl.trim()) return null
+    const u = imageUrl.trim()
+    if (/^https?:\/\//i.test(u)) return null
+    if (u.includes('..') || u.includes('\0')) return null
+    const rel = u.replace(/^\/+/, '')
+    const diskPath = path.join(process.cwd(), 'public', rel)
+    return fs.existsSync(diskPath) ? diskPath : null
+  }
+
+  private async createProductMedia(imageUrl: string | null): Promise<MessageMedia | null> {
+    const localPath = this.getLocalPublicImagePath(imageUrl)
+    if (localPath) {
+      return MessageMedia.fromFilePath(localPath)
+    }
+    const fullUrl = this.getImageUrl(imageUrl)
+    if (!fullUrl) return null
+    return MessageMedia.fromUrl(fullUrl, { unsafeMime: true })
+  }
+
+  private shouldSendLocationSketch(
+    reply: string,
+    policy: { googleMapsUrl: string | null; sketchImageUrl: string | null }
+  ): boolean {
+    if (!policy.sketchImageUrl) return false
+    const normalizedReply = reply
+      .normalize('NFD')
+      .replace(/[\u0300-\u036f]/g, '')
+      .toLowerCase()
+    return Boolean(
+      (policy.googleMapsUrl && reply.includes(policy.googleMapsUrl)) ||
+        /\b(ubicacion|direccion|google maps|maps|croquis|como llegar)\b/.test(normalizedReply)
+    )
+  }
+
+  private async sendLocationSketchIfNeeded(
+    message: Message,
+    phoneNumber: string,
+    reply: string,
+    policy: { googleMapsUrl: string | null; sketchImageUrl: string | null }
+  ): Promise<void> {
+    if (!this.shouldSendLocationSketch(reply, policy)) return
+    try {
+      const media = await this.createProductMedia(policy.sketchImageUrl)
+      if (!media) return
+      const caption = policy.googleMapsUrl
+        ? `Croquis para llegar.\nGoogle Maps: ${policy.googleMapsUrl}`
+        : 'Croquis para llegar.'
+      this.rememberBotSelfMessage(caption)
+      await this.client.sendMessage(message.from, media, { caption })
+      await this.saveConversationMessage({
+        phoneNumber,
+        role: 'assistant',
+        body: `[croquis] ${caption}`,
+        messageType: 'image',
+        mediaUrl: policy.sketchImageUrl
+      })
+    } catch (err) {
+      console.error('[BackpackBot] No se pudo enviar croquis de ubicación:', err)
+    }
+  }
+
+  private isPhotoCatalogRequest(text: string): boolean {
+    const t = text
+      .normalize('NFD')
+      .replace(/[\u0300-\u036f]/g, '')
+      .toLowerCase()
+    if (t.length > 180) return false
+    return (
+      /\b(foto|fotos|imagen|imagenes|imágenes|ver|muestra|muestras|mandame|mandar|pasame|pasar)\b/.test(t) &&
+      /\b(mochila|mochilas|modelo|modelos|catalogo|catalogos|catálogo)\b/.test(t)
+    )
+  }
+
+  private formatProductCaption(
+    product: Awaited<ReturnType<typeof prisma.backpackProduct.findMany>>[number]
+  ): string {
+    const availability = product.stock > 0 ? 'En existencia' : 'Sin existencia'
+    return `*${product.name}*\nPrecio: ${this.formatPrice(product.price)}\nStock: ${product.stock}\nDisponibilidad: ${availability}`
+  }
+
+  private async sendProductPhotos(
+    message: Message,
+    phoneNumber: string,
+    products: Awaited<ReturnType<typeof prisma.backpackProduct.findMany>>
+  ): Promise<void> {
+    const withImages = products.filter((p) => p.imageUrl?.trim())
+    if (withImages.length === 0) {
+      await this.replyToCustomer(
+        message,
+        'Por ahora no tengo fotos cargadas de los modelos. Te puedo pasar nombre, precio y stock si quieres.',
+        phoneNumber
+      )
+      return
+    }
+
+    await this.replyToCustomer(
+      message,
+      `Sí, claro, te mando las fotos de los modelos disponibles. Son ${withImages.length}:`,
+      phoneNumber
+    )
+
+    for (const product of withImages.slice(0, 10)) {
+      try {
+        const media = await this.createProductMedia(product.imageUrl)
+        if (!media) continue
+        const caption = this.formatProductCaption(product)
+        this.rememberBotSelfMessage(caption)
+        await this.client.sendMessage(message.from, media, { caption })
+        await this.saveConversationMessage({
+          phoneNumber,
+          role: 'assistant',
+          body: `[foto] ${caption}`,
+          messageType: 'image',
+          mediaUrl: product.imageUrl
+        })
+      } catch (err) {
+        console.error('[BackpackBot] No se pudo enviar foto de producto:', product.imageUrl, err)
+      }
+    }
   }
 
   private async enterSoldProductsMode(
@@ -606,10 +822,11 @@ class BackpackWhatsAppBot {
   private async handleAgentVisionTurn(
     message: Message,
     phoneNumber: string,
-    body: string
+    body: string,
+    imageAttachment?: UserImageAttachment | null
   ): Promise<void> {
-    const userImageDataUrl = await this.extractUserImageDataUrl(message)
-    if (!userImageDataUrl) {
+    const attachment = imageAttachment ?? await this.extractUserImageAttachment(message)
+    if (!attachment) {
       await this.replyToCustomer(
         message,
         'No pude descargar tu imagen (WhatsApp aún no la entrega o expiró). Por favor reenvíala.',
@@ -634,8 +851,8 @@ class BackpackWhatsAppBot {
         runBackpackLlmTurn({
           userText:
             body.trim() ||
-            'Busca esta mochila imagen por imagen en tu catálogo. Si identificas el modelo, responde nombre exacto, precio, stock y si está en existencia. Si ninguna se parece, dilo en una línea sin inventar.',
-          userImageDataUrl,
+            'El cliente mandó una foto de referencia. Compara esa foto contra las fotos reales del catálogo en la base de datos. Si identificas el modelo o uno muy parecido, responde solo con nombre exacto, precio, stock y disponibilidad. No mandes todo el catálogo. Si ninguna imagen coincide razonablemente, dilo en una línea sin inventar.',
+          userImageDataUrl: attachment.dataUrl,
           policy: {
             rulesForBot: policy.rulesForBot,
             customerFacts: policy.customerFacts,
@@ -670,6 +887,7 @@ class BackpackWhatsAppBot {
     }
 
     await this.replyToCustomer(message, reply, phoneNumber)
+    await this.sendLocationSketchIfNeeded(message, phoneNumber, reply, policy)
 
     // También enviamos las imágenes de los productos del catálogo que el LLM mencionó
     // por nombre, para que el cliente las vea en WhatsApp.
@@ -708,27 +926,23 @@ class BackpackWhatsAppBot {
     // Envía una foto por cada modelo mencionado, con un límite amplio para evitar spam accidental.
     const toSend = matched.slice(0, 10)
     for (const p of toSend) {
-      const fullUrl = this.getImageUrl(p.imageUrl)
-      if (!fullUrl) continue
       try {
-        const media = await MessageMedia.fromUrl(fullUrl, { unsafeMime: true })
-        const availability =
-          typeof p.stock === 'number' && p.stock > 0
-            ? 'En existencia'
-            : 'Sin existencia'
-        const caption = `*${p.name}*\nPrecio: ${this.formatPrice(p.price)}${typeof p.stock === 'number' ? ` • Stock: ${p.stock}` : ''}\nDisponibilidad: ${availability}`
+        const media = await this.createProductMedia(p.imageUrl)
+        if (!media) continue
+        const caption = this.formatProductCaption(p)
         this.rememberBotSelfMessage(caption)
         await this.client.sendMessage(message.from, media, { caption })
         await this.saveConversationMessage({
           phoneNumber: this.normalizePhoneNumber(message.from),
           role: 'assistant',
           body: `[foto] ${caption}`,
-          messageType: 'image'
+          messageType: 'image',
+          mediaUrl: p.imageUrl
         })
       } catch (err) {
         console.error(
           '[BackpackBot] No se pudo enviar imagen de coincidencia:',
-          fullUrl,
+          p.imageUrl,
           err
         )
       }
@@ -755,6 +969,12 @@ class BackpackWhatsAppBot {
     console.log(
       `[BackpackBot] LLM texto para ${phoneNumber} | productos=${products.length} | modelo=${getLlmModel()} | base=${getLlmBaseUrl()}`
     )
+
+    if (this.isPhotoCatalogRequest(body)) {
+      await this.sendProductPhotos(message, phoneNumber, products)
+      await this.updateSessionState(phoneNumber, 'agent')
+      return
+    }
 
     let reply: string
     try {
@@ -795,6 +1015,7 @@ class BackpackWhatsAppBot {
     }
 
     await this.replyToCustomer(message, reply, phoneNumber)
+    await this.sendLocationSketchIfNeeded(message, phoneNumber, reply, policy)
     await this.sendMatchedCatalogImages(message, reply, products)
 
     const nextHistory: BackpackAgentHistoryTurn[] = [
@@ -827,14 +1048,25 @@ class BackpackWhatsAppBot {
 
     try {
       const session = await this.getSession(phoneNumber)
+      if (await this.shouldMuteBotForPhoneNumber(phoneNumber)) {
+        console.log(
+          `[BackpackBot] Mensaje ignorado por muteBot de ${phoneNumber}: "${body.slice(0, 80)}${body.length > 80 ? '…' : ''}"`
+        )
+        return
+      }
       const isAdmin = await this.isAdminPhoneNumber(phoneNumber)
+      const hasImage = this.messageHasImage(message)
+      const userImageAttachment = hasImage
+        ? await this.extractUserImageAttachment(message)
+        : null
       await this.saveConversationMessage({
         phoneNumber,
         role: 'user',
-        body: this.messageHasImage(message)
+        body: hasImage
           ? `[imagen] ${body || '(sin texto)'}`
           : body || '(mensaje vacío)',
-        messageType: this.messageHasImage(message) ? 'image' : 'text'
+        messageType: hasImage ? 'image' : 'text',
+        mediaUrl: userImageAttachment?.mediaUrl ?? null
       })
       console.log(
         `[BackpackBot] Mensaje recibido de ${phoneNumber} | fromMe=${message.fromMe} | admin=${isAdmin} | estado=${session.state} | texto="${body.slice(0, 80)}${body.length > 80 ? '…' : ''}"`
@@ -874,8 +1106,8 @@ class BackpackWhatsAppBot {
         await this.updateSessionState(phoneNumber, 'agent')
       }
 
-      if (this.messageHasImage(message)) {
-        await this.handleAgentVisionTurn(message, phoneNumber, body)
+      if (hasImage) {
+        await this.handleAgentVisionTurn(message, phoneNumber, body, userImageAttachment)
         return
       }
 

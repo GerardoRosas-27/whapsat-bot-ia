@@ -202,6 +202,7 @@ ${parts.rulesForBot.trim() || '(No hay reglas adicionales configuradas en base d
 
 ## Información oficial del negocio (horarios, ubicación, envíos, políticas)
 Úsala para apertura/cierre/ubicación. No inventes datos fuera de este bloque ni del catálogo.
+Si preguntan ubicación, dirección o cómo llegar, incluye el enlace de Google Maps si está en este bloque y menciona el croquis si está disponible.
 ${parts.customerFacts.trim() || '(Sin datos oficiales cargados: indica que no tienes ese dato confirmado y que pueden contactar al negocio para datos de tienda.)'}
 
 ## Catálogo (única fuente de productos, precios y existencias)
@@ -209,7 +210,9 @@ ${parts.catalogText}
 
 ## Imágenes en este turno
 - Si hay foto del cliente: la primera imagen tras el texto introductorio es la suya; las siguientes son referencias del catálogo.
-- Compara con brevedad; si identificas un modelo, cita nombre exacto, precio, stock y si está en existencia según el stock.${visionBlock}`
+- Si el cliente mandó una foto de referencia, compara esa foto contra las imágenes reales del catálogo y responde solo el/los modelos que coincidan razonablemente.
+- No listes todo el catálogo cuando el cliente mandó una foto; solo confirma coincidencias visuales.
+- Si identificas un modelo, cita nombre exacto, precio, stock y si está en existencia según el stock.${visionBlock}`
 }
 
 /**
@@ -423,8 +426,8 @@ export function buildBackpackUserPayload(params: {
     blocks.push({
       type: 'image_url',
       image_url: imgDetail
-        ? { url: params.userImageDataUrl, detail: imgDetail }
-        : { url: params.userImageDataUrl }
+        ? { url: formatImageForLlm(params.userImageDataUrl), detail: imgDetail }
+        : { url: formatImageForLlm(params.userImageDataUrl) }
     })
   }
 
@@ -436,10 +439,17 @@ export function buildBackpackUserPayload(params: {
     blocks.push({
       type: 'image_url',
       image_url: imgDetail
-        ? { url: ref.dataUrl, detail: imgDetail }
-        : { url: ref.dataUrl }
+        ? { url: formatImageForLlm(ref.dataUrl), detail: imgDetail }
+        : { url: formatImageForLlm(ref.dataUrl) }
     })
   }
 
   return blocks
+}
+
+function formatImageForLlm(dataUrl: string): string {
+  const mode = process.env.BACKPACK_LLM_IMAGE_URL_FORMAT?.toLowerCase().trim()
+  if (mode === 'data-url') return dataUrl
+  const comma = dataUrl.indexOf(',')
+  return comma >= 0 ? dataUrl.slice(comma + 1) : dataUrl
 }

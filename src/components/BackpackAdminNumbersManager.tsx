@@ -9,6 +9,7 @@ interface BackpackAdminNumber {
   label: string | null
   isActive: boolean
   treatAsCustomer: boolean
+  muteBot: boolean
   createdAt: string
   updatedAt: string
 }
@@ -17,7 +18,8 @@ const emptyForm = {
   phoneNumber: '',
   label: '',
   isActive: true,
-  treatAsCustomer: false
+  treatAsCustomer: false,
+  muteBot: false
 }
 
 function normalizePhoneInput(value: string): string {
@@ -90,7 +92,8 @@ export default function BackpackAdminNumbersManager() {
           phoneNumber,
           label: formData.label,
           isActive: formData.isActive,
-          treatAsCustomer: formData.treatAsCustomer
+          treatAsCustomer: formData.treatAsCustomer,
+          muteBot: formData.muteBot
         })
       })
       const data = await response.json().catch(() => ({}))
@@ -112,7 +115,8 @@ export default function BackpackAdminNumbersManager() {
       phoneNumber: adminNumber.phoneNumber,
       label: adminNumber.label ?? '',
       isActive: adminNumber.isActive,
-      treatAsCustomer: adminNumber.treatAsCustomer
+      treatAsCustomer: adminNumber.treatAsCustomer,
+      muteBot: adminNumber.muteBot
     })
     setShowForm(true)
   }
@@ -151,7 +155,7 @@ export default function BackpackAdminNumbersManager() {
     <div>
       <div style={{ marginBottom: '20px', display: 'flex', justifyContent: 'space-between', gap: '16px', alignItems: 'center', flexWrap: 'wrap' }}>
         <p style={{ margin: 0, color: '#334155' }}>
-          Estos números pueden usar funciones administrativas. Activa el modo prueba para que el bot los atienda como cliente normal.
+          Estos números pueden usar funciones administrativas, probar como cliente o silenciar respuestas del bot.
         </p>
         <button
           type="button"
@@ -225,6 +229,21 @@ export default function BackpackAdminNumbersManager() {
                 </small>
               </span>
             </label>
+            <label style={{ display: 'flex', alignItems: 'flex-start', gap: '8px', color: '#000', lineHeight: 1.4 }}>
+              <input
+                type="checkbox"
+                checked={formData.muteBot}
+                onChange={e => setFormData({ ...formData, muteBot: e.target.checked })}
+                style={{ marginTop: '3px' }}
+              />
+              <span>
+                El bot no contesta a este número
+                <br />
+                <small style={{ color: '#64748b' }}>
+                  Si está activo, el sistema deja pasar los mensajes de este número sin responder.
+                </small>
+              </span>
+            </label>
             <div style={{ display: 'flex', gap: '10px', marginTop: '8px' }}>
               <button type="submit" style={{ padding: '10px 20px', background: '#059669', color: 'white', border: 'none', borderRadius: '6px', cursor: 'pointer', fontWeight: '600' }}>
                 {editingNumber ? 'Guardar' : 'Crear'}
@@ -243,7 +262,7 @@ export default function BackpackAdminNumbersManager() {
             No hay números admin. Agrega al menos uno para habilitar ventas y corte de caja en el bot.
           </div>
         ) : (
-          <ResponsiveTableScroll minWidth={840}>
+          <ResponsiveTableScroll minWidth={980}>
             <table style={{ width: '100%', borderCollapse: 'collapse', color: '#000' }}>
               <thead>
                 <tr style={{ background: '#f9fafb', borderBottom: '1px solid #e5e7eb' }}>
@@ -251,6 +270,7 @@ export default function BackpackAdminNumbersManager() {
                   <th style={{ padding: '12px', textAlign: 'left', color: '#000' }}>Referencia</th>
                   <th style={{ padding: '12px', textAlign: 'center', color: '#000' }}>Estado</th>
                   <th style={{ padding: '12px', textAlign: 'center', color: '#000' }}>Modo</th>
+                  <th style={{ padding: '12px', textAlign: 'center', color: '#000' }}>Respuestas</th>
                   <th style={{ padding: '12px', textAlign: 'right', color: '#000' }}>Acciones</th>
                 </tr>
               </thead>
@@ -279,6 +299,17 @@ export default function BackpackAdminNumbersManager() {
                         color: adminNumber.treatAsCustomer ? '#1e40af' : '#5b21b6'
                       }}>
                         {adminNumber.treatAsCustomer ? 'Cliente prueba' : 'Admin'}
+                      </span>
+                    </td>
+                    <td style={{ padding: '12px', textAlign: 'center' }}>
+                      <span style={{
+                        padding: '4px 8px',
+                        borderRadius: '4px',
+                        fontSize: '12px',
+                        background: adminNumber.muteBot ? '#fee2e2' : '#dcfce7',
+                        color: adminNumber.muteBot ? '#991b1b' : '#166534'
+                      }}>
+                        {adminNumber.muteBot ? 'No contesta' : 'Contesta'}
                       </span>
                     </td>
                     <td style={{ padding: '12px', textAlign: 'right', color: '#000' }}>

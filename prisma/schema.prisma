@@ -167,6 +167,7 @@ model BackpackConversationMessage {
   role           String               // "user" | "assistant" | "system"
   body           String
   messageType    String               @default("text") // text | image | media
+  mediaUrl       String?              // URL reutilizable de la imagen/media guardada
   createdAt      DateTime             @default(now())
 }
 
@@ -190,6 +191,8 @@ model BackpackBotPolicy {
   rulesForBot         String   @default("") // Instrucciones / límites (system prompt)
   customerFacts       String   @default("") // Horarios, ubicación, políticas (system prompt)
   interactionWorkflow String   @default("") // Flujo de trabajo documentado (system prompt + editable en admin)
+  googleMapsUrl       String?  // Enlace de Google Maps para ubicación del negocio
+  sketchImageUrl      String?  // URL de croquis o imagen de referencia para llegar
   createdAt           DateTime @default(now())
   updatedAt           DateTime @updatedAt
 }
@@ -200,6 +203,7 @@ model BackpackAdminNumber {
   label           String?  // Nombre o referencia del administrador
   isActive        Boolean  @default(true)
   treatAsCustomer Boolean  @default(false) // Si está activo, el admin se atiende como cliente para pruebas
+  muteBot         Boolean  @default(false) // Si está activo, el bot no responde a este número
   createdAt       DateTime @default(now())
   updatedAt       DateTime @updatedAt
 }

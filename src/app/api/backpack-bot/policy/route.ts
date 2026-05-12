@@ -15,7 +15,9 @@ async function getOrCreatePolicy() {
       id: POLICY_ID,
       rulesForBot: '',
       customerFacts: '',
-      interactionWorkflow: ''
+      interactionWorkflow: '',
+      googleMapsUrl: null,
+      sketchImageUrl: null
     },
     update: {}
   })
@@ -36,6 +38,8 @@ export async function GET(request: NextRequest) {
       rulesForBot: policy.rulesForBot,
       customerFacts: policy.customerFacts,
       interactionWorkflow: policy.interactionWorkflow,
+      googleMapsUrl: policy.googleMapsUrl,
+      sketchImageUrl: policy.sketchImageUrl,
       updatedAt: policy.updatedAt
     })
   } catch (error) {
@@ -64,6 +68,10 @@ export async function PUT(request: NextRequest) {
       typeof body.interactionWorkflow === 'string'
         ? body.interactionWorkflow
         : current.interactionWorkflow
+    const googleMapsUrl =
+      typeof body.googleMapsUrl === 'string' ? body.googleMapsUrl.trim() || null : current.googleMapsUrl
+    const sketchImageUrl =
+      typeof body.sketchImageUrl === 'string' ? body.sketchImageUrl.trim() || null : current.sketchImageUrl
 
     const policy = await prisma.backpackBotPolicy.upsert({
       where: { id: POLICY_ID },
@@ -71,12 +79,16 @@ export async function PUT(request: NextRequest) {
         id: POLICY_ID,
         rulesForBot,
         customerFacts,
-        interactionWorkflow
+        interactionWorkflow,
+        googleMapsUrl,
+        sketchImageUrl
       },
       update: {
         rulesForBot,
         customerFacts,
-        interactionWorkflow
+        interactionWorkflow,
+        googleMapsUrl,
+        sketchImageUrl
       }
     })
 
@@ -84,6 +96,8 @@ export async function PUT(request: NextRequest) {
       rulesForBot: policy.rulesForBot,
       customerFacts: policy.customerFacts,
       interactionWorkflow: policy.interactionWorkflow,
+      googleMapsUrl: policy.googleMapsUrl,
+      sketchImageUrl: policy.sketchImageUrl,
       updatedAt: policy.updatedAt
     })
   } catch (error) {

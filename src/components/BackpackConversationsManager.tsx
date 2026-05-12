@@ -16,6 +16,7 @@ type ConversationMessage = {
   role: string
   body: string
   messageType: string
+  mediaUrl: string | null
   createdAt: string
 }
 
@@ -214,7 +215,16 @@ export default function BackpackConversationsManager() {
                     <div style={{ fontSize: '12px', color: '#64748b', marginBottom: '4px' }}>
                       {isBot ? 'Bot' : 'Cliente'} · {item.messageType} · {new Date(item.createdAt).toLocaleString()}
                     </div>
-                    {item.body}
+                    {item.mediaUrl && (
+                      <a href={item.mediaUrl} target="_blank" rel="noreferrer" style={{ display: 'block', marginBottom: '8px' }}>
+                        <img
+                          src={item.mediaUrl}
+                          alt="Imagen del mensaje"
+                          style={{ display: 'block', maxWidth: '100%', maxHeight: '260px', borderRadius: '8px', objectFit: 'contain', background: '#fff' }}
+                        />
+                      </a>
+                    )}
+                    <div>{item.body}</div>
                   </div>
                 </div>
               )
