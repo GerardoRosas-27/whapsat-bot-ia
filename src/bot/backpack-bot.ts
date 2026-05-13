@@ -838,7 +838,7 @@ class BackpackWhatsAppBot {
 
     // También enviamos las imágenes de los productos del catálogo que el LLM mencionó
     // por nombre, para que el cliente las vea en WhatsApp.
-    await this.sendMatchedCatalogImages(message, reply, products)
+    await this.sendMatchedCatalogImages(message, phoneNumber, reply, products)
 
     const nextVisionHistory: LlmTurn[] = [
       ...prevVisionHistory,
@@ -859,6 +859,7 @@ class BackpackWhatsAppBot {
   /** Envía las imágenes de catálogo de los productos que el LLM mencionó por nombre. */
   private async sendMatchedCatalogImages(
     message: Message,
+    phoneNumber: string,
     reply: string,
     products: Awaited<ReturnType<typeof prisma.backpackProduct.findMany>>
   ): Promise<void> {
@@ -879,7 +880,7 @@ class BackpackWhatsAppBot {
         this.rememberBotSelfMessage(caption)
         await this.client.sendMessage(message.from, media, { caption })
         await this.saveConversationMessage({
-          phoneNumber: this.normalizePhoneNumber(message.from),
+          phoneNumber,
           role: 'assistant',
           body: `[foto] ${caption}`,
           messageType: 'image',
@@ -956,7 +957,7 @@ class BackpackWhatsAppBot {
 
     await this.replyToCustomer(message, reply, phoneNumber)
     await this.sendLocationSketchIfNeeded(message, phoneNumber, reply, policy)
-    await this.sendMatchedCatalogImages(message, reply, products)
+    await this.sendMatchedCatalogImages(message, phoneNumber, reply, products)
 
     const nextHistory: BackpackAgentHistoryTurn[] = [
       ...prevHistory,
