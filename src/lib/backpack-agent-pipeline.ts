@@ -10,6 +10,7 @@ import {
   formatCatalogForPrompt,
   sanitizeLlmReplyForCustomer
 } from './backpack-llm-context'
+import { findSimilarBackpackProducts } from './backpack-product-similarity'
 
 export type BackpackAgentHistoryTurn = {
   role: 'user' | 'assistant'
@@ -26,6 +27,7 @@ type AgentScope = 'product' | 'business' | 'mixed' | 'out_of_scope' | 'unknown'
 
 type GroundedAgentContext = {
   scope: AgentScope
+  userText: string
   products: BackpackProduct[]
   businessFacts: string
   fallbackReply?: string
@@ -413,6 +415,7 @@ function buildGroundingContext(input: {
   if (scope === 'out_of_scope') {
     return {
       scope,
+      userText: input.userText,
       products: [],
       businessFacts: '',
       fallbackReply: OUT_OF_SCOPE_FALLBACK,
@@ -430,6 +433,7 @@ function buildGroundingContext(input: {
   if ((scope === 'product' || scope === 'mixed') && products.length === 0 && isSpecificProductSearch(input.userText)) {
     return {
       scope,
+      userText: input.userText,
       products,
       businessFacts,
       fallbackReply: UNKNOWN_PRODUCT_FALLBACK,
@@ -440,6 +444,7 @@ function buildGroundingContext(input: {
   if ((scope === 'business' || scope === 'mixed') && !businessFacts.trim()) {
     return {
       scope,
+      userText: input.userText,
       products,
       businessFacts,
       fallbackReply: UNKNOWN_BUSINESS_FACT_FALLBACK,
@@ -449,6 +454,7 @@ function buildGroundingContext(input: {
 
   return {
     scope,
+    userText: input.userText,
     products,
     businessFacts,
     searchSummary:
@@ -547,8 +553,12 @@ function formatFallbackProductLine(product: BackpackProduct): string {
 function buildDeterministicGroundedReply(ctx: GroundedAgentContext): string {
   if (ctx.fallbackReply) return ctx.fallbackReply
   if (ctx.products.length > 0) {
-    return `Sí, claro, estos son los modelos que manejamos:\n${ctx.products
-      .slice(0, 3)
+    const matches = findSimilarBackpackProducts(ctx.userText, ctx.products, {
+      threshold: 0.8,
+      limit: 3
+    }).map((match) => match.product)
+    const products = matches.length > 0 ? matches : ctx.products.slice(0, 3)
+    return `Sí, claro, estos son los modelos que manejamos:\n${products
       .map(formatFallbackProductLine)
       .join('\n')}`
   }

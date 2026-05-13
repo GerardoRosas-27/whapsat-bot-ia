@@ -119,4 +119,49 @@ describe('runBackpackAgentTurn', () => {
 
     expect(reply).toBe('Sí, tenemos la mochila de batman grande para escuela.')
   })
+
+  it('si usa fallback por meta texto, no regresa los primeros productos por defecto', async () => {
+    global.fetch = jest.fn(async () =>
+      new Response(
+        JSON.stringify({
+          choices: [
+            {
+              message: {
+                content:
+                  'Cliente pregunta por mochilas de Ironman.\n' +
+                  'Revisando el catálogo disponible:\n' +
+                  '1. Se encontró un producto relacionado en el catálogo.'
+              }
+            }
+          ]
+        }),
+        { status: 200, headers: { 'Content-Type': 'application/json' } }
+      )
+    ) as unknown as typeof fetch
+
+    const reply = await runBackpackAgentTurn({
+      userText: 'Hola tienes mochilas de personajes como de Ironman ?',
+      policy: { customerFacts: 'Horario 10:30 a 19:30.' },
+      products: [
+        {
+          ...fakeProducts[0],
+          id: 'bitono',
+          name: 'bitono',
+          description: 'mochila escolar bitono'
+        },
+        {
+          ...fakeProducts[0],
+          id: 'iroman',
+          name: 'mochila de iroman',
+          description: 'mochila para escuela de ironman grande reforzada',
+          price: 180,
+          stock: 2
+        }
+      ],
+      history: []
+    })
+
+    expect(reply).toContain('mochila de iroman')
+    expect(reply).not.toContain('bitono')
+  })
 })
