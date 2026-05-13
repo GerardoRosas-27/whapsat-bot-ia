@@ -32,7 +32,7 @@ type GroundedAgentContext = {
   searchSummary: string
 }
 
-const MAX_RETRIEVED_PRODUCTS = 8
+const MAX_RETRIEVED_PRODUCTS = 3
 const OUT_OF_SCOPE_FALLBACK =
   'Solo te puedo ayudar con información de nuestras mochilas y la tienda. ¿Qué modelo buscas?'
 const UNKNOWN_PRODUCT_FALLBACK =
@@ -234,7 +234,20 @@ const STOP_WORDS = new Set([
   'modelo',
   'modelos',
   'color',
-  'colores'
+  'colores',
+  'foto',
+  'fotos',
+  'imagen',
+  'imagenes',
+  'muestra',
+  'muestras',
+  'mandame',
+  'mandar',
+  'pasame',
+  'pasar',
+  'solo',
+  'manejan',
+  'manejas'
 ])
 
 const PRODUCT_TERMS = [
@@ -411,13 +424,17 @@ function scoreProduct(product: BackpackProduct, terms: string[], userText: strin
   return score
 }
 
-function retrieveProducts(userText: string, products: BackpackProduct[]): BackpackProduct[] {
+export function retrieveTopBackpackProductMatches(
+  userText: string,
+  products: BackpackProduct[],
+  maxResults = 3
+): BackpackProduct[] {
   const terms = extractSearchTerms(userText)
   const broadCatalogRequest =
     terms.length === 0 ||
     terms.every((term) => GENERIC_CATALOG_SEARCH_TERMS.has(term))
   if (broadCatalogRequest) {
-    return products.slice(0, MAX_RETRIEVED_PRODUCTS)
+    return products.slice(0, maxResults)
   }
 
   return products
@@ -427,8 +444,12 @@ function retrieveProducts(userText: string, products: BackpackProduct[]): Backpa
     }))
     .filter((row) => row.score > 0)
     .sort((a, b) => b.score - a.score || a.product.name.localeCompare(b.product.name))
-    .slice(0, MAX_RETRIEVED_PRODUCTS)
+    .slice(0, maxResults)
     .map((row) => row.product)
+}
+
+function retrieveProducts(userText: string, products: BackpackProduct[]): BackpackProduct[] {
+  return retrieveTopBackpackProductMatches(userText, products, MAX_RETRIEVED_PRODUCTS)
 }
 
 function isSpecificProductSearch(userText: string): boolean {

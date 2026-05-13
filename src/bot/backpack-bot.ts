@@ -19,6 +19,7 @@ import {
 import { runBackpackLlmTurn, type BackpackLlmHistoryTurn } from '../lib/backpack-llm-pipeline'
 import {
   runBackpackAgentTurn,
+  retrieveTopBackpackProductMatches,
   type BackpackAgentHistoryTurn
 } from '../lib/backpack-agent-pipeline'
 
@@ -590,7 +591,8 @@ class BackpackWhatsAppBot {
   private async sendProductPhotos(
     message: Message,
     phoneNumber: string,
-    products: Awaited<ReturnType<typeof prisma.backpackProduct.findMany>>
+    products: Awaited<ReturnType<typeof prisma.backpackProduct.findMany>>,
+    requestText: string
   ): Promise<void> {
     const withImages = products.filter((p) => p.imageUrl?.trim())
     if (withImages.length === 0) {
@@ -602,13 +604,23 @@ class BackpackWhatsAppBot {
       return
     }
 
+    const selectedProducts = retrieveTopBackpackProductMatches(requestText, withImages, 3)
+    if (selectedProducts.length === 0) {
+      await this.replyToCustomer(
+        message,
+        'No encontré fotos de un modelo que coincida con esa descripción. Dime el nombre, material o personaje y lo busco en el catálogo.',
+        phoneNumber
+      )
+      return
+    }
+
     await this.replyToCustomer(
       message,
-      `Sí, claro, te mando las fotos de los modelos disponibles. Son ${withImages.length}:`,
+      `Sí, claro, te mando ${selectedProducts.length === 1 ? 'el modelo que más coincide' : `hasta ${selectedProducts.length} modelos que más coinciden`}:`,
       phoneNumber
     )
 
-    for (const product of withImages.slice(0, 10)) {
+    for (const product of selectedProducts) {
       try {
         const media = await this.createProductMedia(product.imageUrl)
         if (!media) continue
@@ -923,8 +935,7 @@ class BackpackWhatsAppBot {
     })
     if (matched.length === 0) return
 
-    // Envía una foto por cada modelo mencionado, con un límite amplio para evitar spam accidental.
-    const toSend = matched.slice(0, 10)
+    const toSend = matched.slice(0, 3)
     for (const p of toSend) {
       try {
         const media = await this.createProductMedia(p.imageUrl)
@@ -971,7 +982,7 @@ class BackpackWhatsAppBot {
     )
 
     if (this.isPhotoCatalogRequest(body)) {
-      await this.sendProductPhotos(message, phoneNumber, products)
+      await this.sendProductPhotos(message, phoneNumber, products, body)
       await this.updateSessionState(phoneNumber, 'agent')
       return
     }
