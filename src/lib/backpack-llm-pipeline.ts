@@ -19,6 +19,8 @@ import { shrinkUserImageForLlm } from './backpack-llm-image'
 
 export type BackpackLlmHistoryTurn = { role: 'user' | 'assistant'; content: string }
 
+const MAX_LLM_HISTORY_MESSAGES = 5
+
 export type BackpackLlmPolicySlice = {
   rulesForBot: string
   customerFacts: string
@@ -44,7 +46,7 @@ export async function runBackpackLlmTurn(input: {
     userImg = await shrinkUserImageForLlm(userImg)
   }
 
-  const historyMessages: LlmMessage[] = input.history.map((t) => ({
+  const historyMessages: LlmMessage[] = input.history.slice(-MAX_LLM_HISTORY_MESSAGES).map((t) => ({
     role: t.role,
     content: t.content
   }))

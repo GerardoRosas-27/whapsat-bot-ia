@@ -32,7 +32,7 @@ type GroundedAgentContext = {
   searchSummary: string
 }
 
-const MAX_RETRIEVED_PRODUCTS = 3
+const MAX_LLM_HISTORY_MESSAGES = 5
 const OUT_OF_SCOPE_FALLBACK =
   'Solo te puedo ayudar con información de nuestras mochilas y la tienda. ¿Qué modelo buscas?'
 const UNKNOWN_PRODUCT_FALLBACK =
@@ -93,7 +93,7 @@ export function buildBackpackAgentSystemPrompt(parts: {
   const facts =
     parts.customerFacts.trim() ||
     '(Sin datos oficiales cargados. Indica que no tienes ese dato y sugiere contactar a la tienda.)'
-  const compactContext = truncateForPrompt(parts.retrievedContext, 950)
+  const compactContext = truncateForPrompt(parts.retrievedContext, 6000)
   return `Respondes WhatsApp de una tienda de mochilas escolares como una persona de mostrador.
 Tu salida debe ser ÚNICAMENTE el mensaje final que se enviará al cliente.
 No escribas análisis, planes, instrucciones, intención del cliente ni razonamiento.
@@ -101,6 +101,7 @@ No digas que eres bot, IA, vendedor, asistente ni "soy de la tienda".
 No uses frases como: "el usuario quiere", "el cliente pregunta", "debo responder", "mi objetivo", "respuesta a generar".
 Usa solo productos de la base de datos e información del negocio configurada en la base de datos.
 Si preguntan ubicación, dirección o cómo llegar, incluye el enlace de Google Maps si aparece en la información oficial y menciona que enviarás el croquis si está disponible.
+Si piden fotos o imágenes, decide tú cuáles modelos cumplen mejor con las características pedidas usando el catálogo completo. Responde con máximo 3 modelos y escribe sus nombres exactos como aparecen en "Catálogo disponible"; el sistema enviará fotos solo de esos nombres exactos.
 Si preguntan por productos disponibles, responde: "Sí, claro, estos son los modelos que manejamos:" y lista productos por nombre exacto.
 No inventes datos. Sé cordial, directo y natural.
 
@@ -112,7 +113,7 @@ Respuesta: Sí, claro, estos son los modelos que manejamos:
 
 Info negocio: ${truncateForPrompt(facts, 260)}
 
-Productos/datos disponibles:
+Catálogo disponible:
 ${compactContext}`
 }
 
@@ -275,32 +276,6 @@ const PRODUCT_TERMS = [
   'modelo'
 ]
 
-const BROAD_CATALOG_TERMS = [
-  'mochila',
-  'mochilas',
-  'catalogo',
-  'catalogos',
-  'disponible',
-  'disponibles',
-  'existencia',
-  'existencias',
-  'productos',
-  'modelos',
-  'informacion'
-]
-
-const GENERIC_CATALOG_SEARCH_TERMS = new Set([
-  'catalogo',
-  'catalogos',
-  'productos',
-  'modelos',
-  'informacion',
-  'disponible',
-  'disponibles',
-  'existencia',
-  'existencias'
-])
-
 const BUSINESS_TERMS = [
   'ubicacion',
   'direccion',
@@ -374,84 +349,6 @@ function inferScope(userText: string): AgentScope {
   return 'unknown'
 }
 
-function productSearchText(product: BackpackProduct): string {
-  const useType =
-    product.useType === 'school'
-      ? 'escolar escuela clases'
-      : product.useType === 'work'
-        ? 'trabajo oficina laptop'
-        : product.useType
-  const gender =
-    product.gender === 'woman'
-      ? 'mujer dama femenina'
-      : product.gender === 'man'
-        ? 'hombre caballero masculino'
-        : product.gender
-  return normalizeText(
-    `${product.name} ${product.description} ${useType} ${gender} ${product.price} ${product.stock}`
-  )
-}
-
-function scoreProduct(product: BackpackProduct, terms: string[], userText: string): number {
-  const normalizedName = normalizeText(product.name)
-  const normalizedDescription = normalizeText(product.description)
-  const normalizedProduct = productSearchText(product)
-  const normalizedUser = normalizeText(userText)
-  let score = 0
-
-  if (normalizedName && normalizedUser.includes(normalizedName)) score += 12
-  for (const term of terms) {
-    if (normalizedName.includes(term)) score += 5
-    if (normalizedDescription.includes(term)) score += 3
-    if (normalizedProduct.includes(term)) score += 2
-  }
-  if (/\b(escuela|escolar|escolares|clases|secundaria|prepa|universidad)\b/.test(normalizedUser) && product.useType === 'school') {
-    score += 4
-  }
-  if (/\b(trabajo|oficina|laptop)\b/.test(normalizedUser) && product.useType === 'work') {
-    score += 4
-  }
-  if (/\b(mujer|dama|femenina|nina)\b/.test(normalizedUser) && product.gender === 'woman') {
-    score += 4
-  }
-  if (/\b(hombre|caballero|masculino|nino)\b/.test(normalizedUser) && product.gender === 'man') {
-    score += 4
-  }
-  if (/\bunisex\b/.test(normalizedUser) && product.gender === 'unisex') {
-    score += 4
-  }
-
-  return score
-}
-
-export function retrieveTopBackpackProductMatches(
-  userText: string,
-  products: BackpackProduct[],
-  maxResults = 3
-): BackpackProduct[] {
-  const terms = extractSearchTerms(userText)
-  const broadCatalogRequest =
-    terms.length === 0 ||
-    terms.every((term) => GENERIC_CATALOG_SEARCH_TERMS.has(term))
-  if (broadCatalogRequest) {
-    return products.slice(0, maxResults)
-  }
-
-  return products
-    .map((product) => ({
-      product,
-      score: scoreProduct(product, terms, userText)
-    }))
-    .filter((row) => row.score > 0)
-    .sort((a, b) => b.score - a.score || a.product.name.localeCompare(b.product.name))
-    .slice(0, maxResults)
-    .map((row) => row.product)
-}
-
-function retrieveProducts(userText: string, products: BackpackProduct[]): BackpackProduct[] {
-  return retrieveTopBackpackProductMatches(userText, products, MAX_RETRIEVED_PRODUCTS)
-}
-
 function isSpecificProductSearch(userText: string): boolean {
   const terms = extractSearchTerms(userText)
   if (terms.length > 0) return true
@@ -510,7 +407,7 @@ function buildGroundingContext(input: {
 
   const needsProducts = scope === 'product' || scope === 'mixed' || scope === 'unknown'
   const needsBusinessFacts = scope === 'business' || scope === 'mixed'
-  const products = needsProducts ? retrieveProducts(input.userText, input.products) : []
+  const products = needsProducts ? input.products : []
   const businessFacts = needsBusinessFacts
     ? selectRelevantBusinessFacts(input.userText, input.customerFacts)
     : ''
@@ -541,7 +438,7 @@ function buildGroundingContext(input: {
     businessFacts,
     searchSummary:
       products.length > 0
-        ? `Se recuperaron ${products.length} producto(s) relevante(s).`
+        ? `Catálogo completo disponible para que el LLM elija hasta 3 producto(s). Total: ${products.length}.`
         : 'No se recuperaron productos; responder solo con datos oficiales si aplica.'
   }
 }
@@ -550,7 +447,7 @@ function formatGroundedContext(ctx: GroundedAgentContext): string {
   return `Estado de búsqueda: ${ctx.searchSummary}
 Alcance detectado: ${ctx.scope}
 
-Productos relevantes:
+Catálogo disponible:
 ${formatProductsForGrounding(ctx.products)}
 
 Datos oficiales relevantes:
@@ -678,7 +575,7 @@ export async function runBackpackAgentTurn(input: {
     retrievedContext: formatGroundedContext(groundedContext)
   })
 
-  const historyMessages: LlmMessage[] = input.history.slice(-4).map((t) => ({
+  const historyMessages: LlmMessage[] = input.history.slice(-MAX_LLM_HISTORY_MESSAGES).map((t) => ({
     role: t.role,
     content: t.content
   }))

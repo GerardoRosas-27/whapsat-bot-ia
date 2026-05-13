@@ -19,7 +19,6 @@ import {
 import { runBackpackLlmTurn, type BackpackLlmHistoryTurn } from '../lib/backpack-llm-pipeline'
 import {
   runBackpackAgentTurn,
-  retrieveTopBackpackProductMatches,
   type BackpackAgentHistoryTurn
 } from '../lib/backpack-agent-pipeline'
 
@@ -569,75 +568,11 @@ class BackpackWhatsAppBot {
     }
   }
 
-  private isPhotoCatalogRequest(text: string): boolean {
-    const t = text
-      .normalize('NFD')
-      .replace(/[\u0300-\u036f]/g, '')
-      .toLowerCase()
-    if (t.length > 180) return false
-    return (
-      /\b(foto|fotos|imagen|imagenes|imágenes|ver|muestra|muestras|mandame|mandar|pasame|pasar)\b/.test(t) &&
-      /\b(mochila|mochilas|modelo|modelos|catalogo|catalogos|catálogo)\b/.test(t)
-    )
-  }
-
   private formatProductCaption(
     product: Awaited<ReturnType<typeof prisma.backpackProduct.findMany>>[number]
   ): string {
     const availability = product.stock > 0 ? 'En existencia' : 'Sin existencia'
     return `*${product.name}*\nPrecio: ${this.formatPrice(product.price)}\nStock: ${product.stock}\nDisponibilidad: ${availability}`
-  }
-
-  private async sendProductPhotos(
-    message: Message,
-    phoneNumber: string,
-    products: Awaited<ReturnType<typeof prisma.backpackProduct.findMany>>,
-    requestText: string
-  ): Promise<void> {
-    const withImages = products.filter((p) => p.imageUrl?.trim())
-    if (withImages.length === 0) {
-      await this.replyToCustomer(
-        message,
-        'Por ahora no tengo fotos cargadas de los modelos. Te puedo pasar nombre, precio y stock si quieres.',
-        phoneNumber
-      )
-      return
-    }
-
-    const selectedProducts = retrieveTopBackpackProductMatches(requestText, withImages, 3)
-    if (selectedProducts.length === 0) {
-      await this.replyToCustomer(
-        message,
-        'No encontré fotos de un modelo que coincida con esa descripción. Dime el nombre, material o personaje y lo busco en el catálogo.',
-        phoneNumber
-      )
-      return
-    }
-
-    await this.replyToCustomer(
-      message,
-      `Sí, claro, te mando ${selectedProducts.length === 1 ? 'el modelo que más coincide' : `hasta ${selectedProducts.length} modelos que más coinciden`}:`,
-      phoneNumber
-    )
-
-    for (const product of selectedProducts) {
-      try {
-        const media = await this.createProductMedia(product.imageUrl)
-        if (!media) continue
-        const caption = this.formatProductCaption(product)
-        this.rememberBotSelfMessage(caption)
-        await this.client.sendMessage(message.from, media, { caption })
-        await this.saveConversationMessage({
-          phoneNumber,
-          role: 'assistant',
-          body: `[foto] ${caption}`,
-          messageType: 'image',
-          mediaUrl: product.imageUrl
-        })
-      } catch (err) {
-        console.error('[BackpackBot] No se pudo enviar foto de producto:', product.imageUrl, err)
-      }
-    }
   }
 
   private async enterSoldProductsMode(
@@ -980,12 +915,6 @@ class BackpackWhatsAppBot {
     console.log(
       `[BackpackBot] LLM texto para ${phoneNumber} | productos=${products.length} | modelo=${getLlmModel()} | base=${getLlmBaseUrl()}`
     )
-
-    if (this.isPhotoCatalogRequest(body)) {
-      await this.sendProductPhotos(message, phoneNumber, products, body)
-      await this.updateSessionState(phoneNumber, 'agent')
-      return
-    }
 
     let reply: string
     try {
