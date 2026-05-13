@@ -91,6 +91,23 @@ mochila escolar de iroman grande reforzada`,
     expect(matches[0].score).toBeGreaterThanOrEqual(0.8)
   })
 
+  it('no confunde batman con iroman cuando solo se menciona Batman', () => {
+    const matches = findSimilarBackpackProducts(
+      'Sí, tenemos la mochila de batman grande para escuela. ¿Te interesa esa o buscas algo más?',
+      [
+        ...products,
+        {
+          name: 'mochila de batman',
+          description: 'mochila para escuela de batman grande'
+        }
+      ]
+    )
+
+    expect(matches.map((match) => match.product.name)).toEqual([
+      'mochila de batman'
+    ])
+  })
+
   it('busca por descripción solo cuando no hay coincidencias por nombre', () => {
     const matches = findSimilarBackpackProducts(
       'Sí, tenemos una mochila grande de lona con candado para escuela reforzada.',
@@ -105,5 +122,44 @@ mochila escolar de iroman grande reforzada`,
     expect(matches).toHaveLength(1)
     expect(matches[0].product.name).toBe('modelo x1')
     expect(matches[0].matchedBy).toBe('description')
+  })
+
+  it('encuentra mochilas escolares para mujer por género y uso', () => {
+    const matches = findSimilarBackpackProducts(
+      'Mochilas escolar para mujer cuáles tienes',
+      [
+        {
+          name: 'bitono',
+          description: 'mochila chica escolar y de trabajo reforzada',
+          gender: 'man',
+          useType: 'work'
+        },
+        {
+          name: 'gatito impermeable',
+          description: 'mochila de gatito impermeable kawai para escuela',
+          gender: 'woman',
+          useType: 'school'
+        },
+        {
+          name: 'oxfort grande',
+          description: 'mochila de mujer grande con monedero, para escuela reforzada',
+          gender: 'woman',
+          useType: 'school'
+        },
+        {
+          name: 'oxfort impermeable',
+          description: 'mochila impermeable para escuela con diseño kawait',
+          gender: 'woman',
+          useType: 'school'
+        }
+      ]
+    )
+
+    expect(matches.map((match) => match.product.name)).toEqual([
+      'oxfort grande',
+      'gatito impermeable',
+      'oxfort impermeable'
+    ])
+    expect(matches.every((match) => match.matchedBy === 'description')).toBe(true)
   })
 })

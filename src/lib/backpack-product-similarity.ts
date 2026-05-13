@@ -1,6 +1,7 @@
 import type { BackpackProduct } from '@prisma/client'
 
-type CatalogProduct = Pick<BackpackProduct, 'name' | 'description'>
+type CatalogProduct = Pick<BackpackProduct, 'name' | 'description'> &
+  Partial<Pick<BackpackProduct, 'gender' | 'useType'>>
 
 export type ProductSimilarityMatch<T extends CatalogProduct> = {
   product: T
@@ -49,7 +50,7 @@ export function findSimilarBackpackProducts<T extends CatalogProduct>(
   const byName = rankProductsByField(normalizedText, products, 'name', threshold, limit)
   if (byName.length > 0) return byName
 
-  return rankProductsByField(normalizedText, products, 'description', threshold, limit)
+  return rankProductsBySearchText(normalizedText, products, threshold, limit)
 }
 
 export function normalizeCatalogText(value: string): string {
@@ -80,6 +81,95 @@ function rankProductsByField<T extends CatalogProduct>(
     .slice(0, limit)
 }
 
+function rankProductsBySearchText<T extends CatalogProduct>(
+  normalizedText: string,
+  products: T[],
+  threshold: number,
+  limit: number
+): ProductSimilarityMatch<T>[] {
+  return products
+    .map((product) => ({
+      product,
+      score: attributeSimilarityForQuery(normalizedText, product),
+      matchedBy: 'description' as const
+    }))
+    .filter((match): match is ProductSimilarityMatch<T> => match.score >= threshold)
+    .sort((a, b) => b.score - a.score || a.product.name.localeCompare(b.product.name))
+    .slice(0, limit)
+}
+
+function attributeSimilarityForQuery(
+  normalizedText: string,
+  product: CatalogProduct
+): number {
+  const descriptionSimilarity = bestSimilarityForCatalogValue(
+    normalizedText,
+    product.description
+  )
+  const queryTerms = normalizedText
+    .split(' ')
+    .filter((term) => term.length >= 3 && !isQueryNoiseTerm(term))
+  if (queryTerms.length === 0) return descriptionSimilarity
+
+  const attributeText = normalizeCatalogText(buildProductAttributeSearchText(product))
+  const directText = normalizeCatalogText(`${product.name} ${product.description}`)
+  const matchedTerms = queryTerms.filter((term) => attributeText.includes(term))
+  if (matchedTerms.length === 0) return descriptionSimilarity
+
+  const coverage = matchedTerms.length / queryTerms.length
+  const directCoverage =
+    matchedTerms.filter((term) => directText.includes(term)).length / queryTerms.length
+
+  return Math.max(descriptionSimilarity, coverage * 0.95 + directCoverage * 0.05)
+}
+
+function isQueryNoiseTerm(term: string): boolean {
+  return new Set([
+    'hola',
+    'mochila',
+    'mochilas',
+    'modelo',
+    'modelos',
+    'cual',
+    'cuales',
+    'cuáles',
+    'tienes',
+    'tiene',
+    'tienen',
+    'para',
+    'con',
+    'sin',
+    'que',
+    'qué',
+    'hay',
+    'manejamos',
+    'manejas'
+  ]).has(term)
+}
+
+function buildProductAttributeSearchText(product: CatalogProduct): string {
+  return [
+    product.description,
+    genderLabel(product.gender),
+    useTypeLabel(product.useType)
+  ]
+    .filter(Boolean)
+    .join(' ')
+}
+
+export function genderLabel(gender: string | null | undefined): string {
+  if (gender === 'woman') return 'mujer dama femenina niña'
+  if (gender === 'man') return 'hombre caballero masculino niño'
+  if (gender === 'unisex') return 'unisex mujer hombre'
+  return ''
+}
+
+export function useTypeLabel(useType: string | null | undefined): string {
+  if (useType === 'school') return 'escolar escuela clases'
+  if (useType === 'work') return 'trabajo oficina'
+  return ''
+}
+
 function bestSimilarityForCatalogValue(normalizedText: string, catalogValue: string): number {
   const normalizedCatalogValue = normalizeCatalogText(catalogValue)
   if (!normalizedCatalogValue) return 0
@@ -99,9 +189,11 @@ function bestSimilarityForCatalogValue(normalizedText: string, catalogValue: str
     const termScores = distinctive.map((term) =>
       Math.max(...textTokens.map((token) => similarityPercent(token, term)))
     )
-    if (termScores.every((score) => score >= 0.8)) {
+    const fuzzyThreshold = distinctive.length === 1 ? 0.85 : 0.8
+    if (termScores.every((score) => score >= fuzzyThreshold)) {
       return Math.min(0.94, average(termScores))
     }
+    return 0
   }
 
   const catalogTokens = normalizedCatalogValue.split(' ')

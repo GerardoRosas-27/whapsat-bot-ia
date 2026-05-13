@@ -10,7 +10,11 @@ import {
   formatCatalogForPrompt,
   sanitizeLlmReplyForCustomer
 } from './backpack-llm-context'
-import { findSimilarBackpackProducts } from './backpack-product-similarity'
+import {
+  findSimilarBackpackProducts,
+  genderLabel,
+  useTypeLabel
+} from './backpack-product-similarity'
 
 export type BackpackAgentHistoryTurn = {
   role: 'user' | 'assistant'
@@ -100,12 +104,13 @@ export function buildBackpackAgentSystemPrompt(parts: {
 Tu salida debe ser ÚNICAMENTE el mensaje final que se enviará al cliente.
 No escribas análisis, planes, instrucciones, intención del cliente ni razonamiento.
 No digas que eres bot, IA, vendedor, asistente ni "soy de la tienda".
-No uses frases como: "el usuario quiere", "el cliente pregunta", "cliente solicita", "revisando el catálogo", "catálogo disponible", "debo responder", "mi objetivo", "respuesta a generar".
+No uses frases como: "el usuario quiere", "el cliente pregunta", "cliente solicita", "revisando el catálogo", "catálogo disponible", "debo responder", "mi objetivo", "respuesta a generar", "confirmar disponibilidad", "ofrecer información".
 Nunca escribas bloques de análisis antes de responder. Prohibido este formato:
 Cliente pregunta por ...
 Revisando el catálogo disponible:
 1. ...
 Respuesta a generar ...
+Confirmar disponibilidad y ofrecer información si es necesario.
 Si piensas eso internamente, NO lo incluyas. Escribe solo la respuesta final, por ejemplo: "Sí, tenemos la mochila de batman grande para escuela."
 Usa solo productos de la base de datos e información del negocio configurada en la base de datos.
 Si preguntan ubicación, dirección o cómo llegar, incluye el enlace de Google Maps si aparece en la información oficial y menciona que enviarás el croquis si está disponible.
@@ -143,10 +148,37 @@ function finalCleanup(reply: string): string {
       t = t.slice(close.index + close[0].length).trim()
     }
   }
+  t = collapseDuplicatedReply(t)
   return limitReplyLines(t)
 }
 
+function collapseDuplicatedReply(text: string): string {
+  const t = text.trim()
+  if (!t) return t
+
+  const compact = t.replace(/\s+/g, ' ')
+  if (compact.length % 2 === 0) {
+    const half = compact.length / 2
+    const left = compact.slice(0, half).trim()
+    const right = compact.slice(half).trim()
+    if (left && left === right) return left
+  }
+
+  const sentenceMatch = /^(.+?[.!?])\s*\1$/s.exec(compact)
+  if (sentenceMatch?.[1]) return sentenceMatch[1].trim()
+
+  return t
+}
+
 function stripReasoningBeforeFinalAnswer(text: string): string {
+  const actionPreamble = text.match(
+    /^(?:confirmar\s+disponibilidad|ofrecer\s+informaci[oó]n|confirmar\s+[^.!?]*|ofrecer\s+[^.!?]*)(?:\s+y\s+(?:confirmar|ofrecer)\s+[^.!?]*)*[.!?]\s*/i
+  )
+  if (actionPreamble?.[0]) {
+    const cut = text.slice(actionPreamble[0].length).trim()
+    if (cut.length >= 3) return cut
+  }
+
   const gluedFinal = text.match(
     /(?:respuesta\s+a\s+generar\b[^.!?\n]*(?:[.!?]\s*)?)(?=(¡?hola\b|s[ií],?\s|claro\b|tenemos\b|manejamos\b|te\s|la\s|el\s|hay\s))/i
   )
@@ -401,7 +433,7 @@ function formatProductsForGrounding(products: BackpackProduct[]): string {
   return products
     .map(
       (p, index) =>
-        `${index + 1}. *${p.name}* | precio:$${Number(p.price).toFixed(2)} | stock:${p.stock} | género:${p.gender} | uso:${p.useType}\n   ${p.description}`
+        `${index + 1}. *${p.name}* | precio:$${Number(p.price).toFixed(2)} | stock:${p.stock} | género:${genderLabel(p.gender) || p.gender} | uso:${useTypeLabel(p.useType) || p.useType}\n   ${p.description}`
     )
     .join('\n')
 }
@@ -499,7 +531,7 @@ function looksLikeMetaNarration(reply: string): boolean {
     /\b(el usuario|la usuaria|el cliente|la clienta)\s+est[aá]\s+(preguntando|solicitando|buscando|pidiendo)/i.test(
       reply
     ) ||
-    /\b(como vendedor|como asistente|debo responder|debo ser|mi objetivo|plan:|razonamiento|información disponible:|cordial,\s*direct[ao]|siguiendo la regla|revisando el cat[aá]logo|respuesta a generar|cat[aá]logo disponible)/i.test(
+    /\b(como vendedor|como asistente|debo responder|debo ser|mi objetivo|plan:|razonamiento|información disponible:|cordial,\s*direct[ao]|siguiendo la regla|revisando el cat[aá]logo|respuesta a generar|cat[aá]logo disponible|confirmar disponibilidad|ofrecer informaci[oó]n)/i.test(
       reply
     )
   )

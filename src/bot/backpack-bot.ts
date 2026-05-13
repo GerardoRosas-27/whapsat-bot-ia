@@ -793,10 +793,10 @@ class BackpackWhatsAppBot {
       `[BackpackBot] LLM visión para ${phoneNumber} | modelo=${getLlmModel()} | base=${getLlmBaseUrl()} | texto="${body.slice(0, 80)}${body.length > 80 ? '…' : ''}" | imgsCatálogo=${catalogRefCount}`
     )
 
-    let reply: string
-    try {
-      reply = await this.withCustomerTyping(message, () =>
-        runBackpackLlmTurn({
+    const reply = await this.withCustomerTyping(message, async () => {
+      let result: string
+      try {
+        result = await runBackpackLlmTurn({
           userText:
             body.trim() ||
             'El cliente mandó una foto de referencia. Compara esa foto contra las fotos reales del catálogo en la base de datos. Si identificas el modelo o uno muy parecido, responde solo con nombre exacto, precio, stock y disponibilidad. No mandes todo el catálogo. Si ninguna imagen coincide razonablemente, dilo en una línea sin inventar.',
@@ -810,36 +810,38 @@ class BackpackWhatsAppBot {
           history: prevVisionHistory,
           temperature: 0.35
         })
-      )
-    } catch (err) {
-      console.error('[BackpackBot] Agente IA (visión) no disponible:', err)
-      await this.replyToCustomer(
-        message,
-        '⚠️ No pude analizar tu imagen en este momento. Por favor intenta de nuevo o descríbeme el modelo que buscas.',
-        phoneNumber
-      )
-      return
-    }
+      } catch (err) {
+        console.error('[BackpackBot] Agente IA (visión) no disponible:', err)
+        await this.replyToCustomer(
+          message,
+          '⚠️ No pude analizar tu imagen en este momento. Por favor intenta de nuevo o descríbeme el modelo que buscas.',
+          phoneNumber
+        )
+        return null
+      }
 
-    if (!reply || reply.trim().length === 0) {
-      await this.replyToCustomer(
-        message,
-        '⚠️ No pude preparar una respuesta. Por favor intenta de nuevo o descríbeme el modelo que buscas.',
-        phoneNumber
-      )
-      return
-    }
+      if (!result || result.trim().length === 0) {
+        await this.replyToCustomer(
+          message,
+          '⚠️ No pude preparar una respuesta. Por favor intenta de nuevo o descríbeme el modelo que buscas.',
+          phoneNumber
+        )
+        return null
+      }
 
-    if (reply.length > BackpackWhatsAppBot.WHATSAPP_REPLY_MAX) {
-      reply = reply.slice(0, BackpackWhatsAppBot.WHATSAPP_REPLY_MAX - 20) + '\n…'
-    }
+      if (result.length > BackpackWhatsAppBot.WHATSAPP_REPLY_MAX) {
+        result = result.slice(0, BackpackWhatsAppBot.WHATSAPP_REPLY_MAX - 20) + '\n…'
+      }
 
-    await this.replyToCustomer(message, reply, phoneNumber)
-    await this.sendLocationSketchIfNeeded(message, phoneNumber, reply, policy)
+      await this.replyToCustomer(message, result, phoneNumber)
+      await this.sendLocationSketchIfNeeded(message, phoneNumber, result, policy)
 
-    // También enviamos las imágenes de los productos del catálogo que el LLM mencionó
-    // por nombre, para que el cliente las vea en WhatsApp.
-    await this.sendMatchedCatalogImages(message, phoneNumber, reply, products)
+      // También enviamos las imágenes de los productos del catálogo que el LLM mencionó
+      // por nombre, para que el cliente las vea en WhatsApp.
+      await this.sendMatchedCatalogImages(message, phoneNumber, result, products)
+      return result
+    })
+    if (!reply) return
 
     const nextVisionHistory: LlmTurn[] = [
       ...prevVisionHistory,
@@ -921,10 +923,10 @@ class BackpackWhatsAppBot {
       `[BackpackBot] LLM texto para ${phoneNumber} | productos=${products.length} | modelo=${getLlmModel()} | base=${getLlmBaseUrl()}`
     )
 
-    let reply: string
-    try {
-      reply = await this.withCustomerTyping(message, () =>
-        runBackpackAgentTurn({
+    const reply = await this.withCustomerTyping(message, async () => {
+      let result: string
+      try {
+        result = await runBackpackAgentTurn({
           userText: body,
           policy: {
             customerFacts: policy.customerFacts,
@@ -935,33 +937,35 @@ class BackpackWhatsAppBot {
           history: prevHistory,
           temperature: 0.2
         })
-      )
-    } catch (err) {
-      console.error('[BackpackBot] Agente IA no disponible:', err)
-      await this.replyToCustomer(
-        message,
-        '⚠️ No pude preparar la respuesta automática en este momento. Por favor intenta de nuevo.',
-        phoneNumber
-      )
-      return
-    }
+      } catch (err) {
+        console.error('[BackpackBot] Agente IA no disponible:', err)
+        await this.replyToCustomer(
+          message,
+          '⚠️ No pude preparar la respuesta automática en este momento. Por favor intenta de nuevo.',
+          phoneNumber
+        )
+        return null
+      }
 
-    if (!reply || reply.trim().length === 0) {
-      await this.replyToCustomer(
-        message,
-        '⚠️ No pude preparar una respuesta. Por favor intenta de nuevo.',
-        phoneNumber
-      )
-      return
-    }
+      if (!result || result.trim().length === 0) {
+        await this.replyToCustomer(
+          message,
+          '⚠️ No pude preparar una respuesta. Por favor intenta de nuevo.',
+          phoneNumber
+        )
+        return null
+      }
 
-    if (reply.length > BackpackWhatsAppBot.WHATSAPP_REPLY_MAX) {
-      reply = reply.slice(0, BackpackWhatsAppBot.WHATSAPP_REPLY_MAX - 20) + '\n…'
-    }
+      if (result.length > BackpackWhatsAppBot.WHATSAPP_REPLY_MAX) {
+        result = result.slice(0, BackpackWhatsAppBot.WHATSAPP_REPLY_MAX - 20) + '\n…'
+      }
 
-    await this.replyToCustomer(message, reply, phoneNumber)
-    await this.sendLocationSketchIfNeeded(message, phoneNumber, reply, policy)
-    await this.sendMatchedCatalogImages(message, phoneNumber, reply, products)
+      await this.replyToCustomer(message, result, phoneNumber)
+      await this.sendLocationSketchIfNeeded(message, phoneNumber, result, policy)
+      await this.sendMatchedCatalogImages(message, phoneNumber, result, products)
+      return result
+    })
+    if (!reply) return
 
     const nextHistory: BackpackAgentHistoryTurn[] = [
       ...prevHistory,

@@ -164,4 +164,80 @@ describe('runBackpackAgentTurn', () => {
     expect(reply).toContain('mochila de iroman')
     expect(reply).not.toContain('bitono')
   })
+
+  it('elimina respuestas finales duplicadas pegadas', async () => {
+    global.fetch = jest.fn(async () =>
+      new Response(
+        JSON.stringify({
+          choices: [
+            {
+              message: {
+                content:
+                  'Sí, tenemos la mochila escolar de iroman grande reforzada. ¿Te interesa esa o buscas algo más?' +
+                  'Sí, tenemos la mochila escolar de iroman grande reforzada. ¿Te interesa esa o buscas algo más?'
+              }
+            }
+          ]
+        }),
+        { status: 200, headers: { 'Content-Type': 'application/json' } }
+      )
+    ) as unknown as typeof fetch
+
+    const reply = await runBackpackAgentTurn({
+      userText: '¿Tienes mochila de Ironman?',
+      policy: { customerFacts: 'Horario 10:30 a 19:30.' },
+      products: [
+        {
+          ...fakeProducts[0],
+          id: 'iroman',
+          name: 'mochila de iroman',
+          description: 'mochila escolar de iroman grande reforzada',
+          price: 180,
+          stock: 2
+        }
+      ],
+      history: []
+    })
+
+    expect(reply).toBe(
+      'Sí, tenemos la mochila escolar de iroman grande reforzada. ¿Te interesa esa o buscas algo más?'
+    )
+  })
+
+  it('recorta instrucciones internas de acción antes de la respuesta final', async () => {
+    global.fetch = jest.fn(async () =>
+      new Response(
+        JSON.stringify({
+          choices: [
+            {
+              message: {
+                content:
+                  'Confirmar disponibilidad y ofrecer información si es necesario.' +
+                  'Sí, tenemos la mochila escolar de capitan america grande. ¿Te interesa?'
+              }
+            }
+          ]
+        }),
+        { status: 200, headers: { 'Content-Type': 'application/json' } }
+      )
+    ) as unknown as typeof fetch
+
+    const reply = await runBackpackAgentTurn({
+      userText: '¿Tienes mochila de Capitán América?',
+      policy: { customerFacts: 'Horario 10:30 a 19:30.' },
+      products: [
+        {
+          ...fakeProducts[0],
+          id: 'capitan',
+          name: 'mochila de capitan america',
+          description: 'mochila escolar de capitan america grande',
+          price: 180,
+          stock: 2
+        }
+      ],
+      history: []
+    })
+
+    expect(reply).toBe('Sí, tenemos la mochila escolar de capitan america grande. ¿Te interesa?')
+  })
 })

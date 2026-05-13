@@ -1,4 +1,5 @@
-import { sanitizeLlmReplyForCustomer } from '@/modules/backpack/domain'
+import { fetchBackpackCatalogForLlm, sanitizeLlmReplyForCustomer } from '@/modules/backpack/domain'
+import { prisma } from '@/lib/prisma'
 
 describe('sanitizeLlmReplyForCustomer', () => {
   it('elimina monólogo CoT en inglés y deja solo el mensaje en español', () => {
@@ -29,5 +30,33 @@ Hola, esa mochila no la tenemos en catálogo. ¿Te muestro *bitono* o *luna*?`
     expect(sanitizeLlmReplyForCustomer(raw)).toBe(
       'Hola, no tenemos ese modelo en catálogo. Te puedo mostrar *bitono*.'
     )
+  })
+})
+
+jest.mock('@/lib/prisma', () => ({
+  prisma: {
+    backpackProduct: {
+      findMany: jest.fn()
+    }
+  }
+}))
+
+describe('fetchBackpackCatalogForLlm', () => {
+  afterEach(() => {
+    jest.clearAllMocks()
+  })
+
+  it('solo consulta productos activos y con existencia', async () => {
+    ;(prisma.backpackProduct.findMany as jest.Mock).mockResolvedValue([])
+
+    await fetchBackpackCatalogForLlm()
+
+    expect(prisma.backpackProduct.findMany).toHaveBeenCalledWith({
+      where: {
+        isActive: true,
+        stock: { gt: 0 }
+      },
+      orderBy: { name: 'asc' }
+    })
   })
 })
