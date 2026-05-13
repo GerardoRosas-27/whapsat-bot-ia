@@ -98,7 +98,13 @@ export function buildBackpackAgentSystemPrompt(parts: {
 Tu salida debe ser ÚNICAMENTE el mensaje final que se enviará al cliente.
 No escribas análisis, planes, instrucciones, intención del cliente ni razonamiento.
 No digas que eres bot, IA, vendedor, asistente ni "soy de la tienda".
-No uses frases como: "el usuario quiere", "el cliente pregunta", "debo responder", "mi objetivo", "respuesta a generar".
+No uses frases como: "el usuario quiere", "el cliente pregunta", "cliente solicita", "revisando el catálogo", "catálogo disponible", "debo responder", "mi objetivo", "respuesta a generar".
+Nunca escribas bloques de análisis antes de responder. Prohibido este formato:
+Cliente pregunta por ...
+Revisando el catálogo disponible:
+1. ...
+Respuesta a generar ...
+Si piensas eso internamente, NO lo incluyas. Escribe solo la respuesta final, por ejemplo: "Sí, tenemos la mochila de batman grande para escuela."
 Usa solo productos de la base de datos e información del negocio configurada en la base de datos.
 Si preguntan ubicación, dirección o cómo llegar, incluye el enlace de Google Maps si aparece en la información oficial y menciona que enviarás el croquis si está disponible.
 Si piden fotos o imágenes, decide tú cuáles modelos cumplen mejor con las características pedidas usando el catálogo completo. Responde con máximo 3 modelos y escribe sus nombres exactos como aparecen en "Catálogo disponible"; el sistema enviará fotos solo de esos nombres exactos.
@@ -139,9 +145,18 @@ function finalCleanup(reply: string): string {
 }
 
 function stripReasoningBeforeFinalAnswer(text: string): string {
+  const gluedFinal = text.match(
+    /(?:respuesta\s+a\s+generar\b[^.!?\n]*(?:[.!?]\s*)?)(?=(¡?hola\b|s[ií],?\s|claro\b|tenemos\b|manejamos\b|te\s|la\s|el\s|hay\s))/i
+  )
+  if (gluedFinal?.index != null) {
+    const start = gluedFinal.index + gluedFinal[0].length
+    const cut = text.slice(start).trim()
+    if (cut.length >= 3) return cut
+  }
+
   const markers = [
     /(?:^|\n)\s*(?:respuesta|respuesta final|mensaje final)\s*:\s*/i,
-    /(?:^|\n)\s*(?:respuesta a generar)\s*:\s*/i,
+    /(?:^|\n)\s*(?:respuesta a generar)(?:\s+debe\s+ser[^:\n.]*)?\s*[:.]?\s*/i,
     /(?:^|\n)\s*(?:contestar|responder)\s*:\s*/i
   ]
   for (const marker of markers) {
@@ -154,7 +169,7 @@ function stripReasoningBeforeFinalAnswer(text: string): string {
   }
 
   const directStart = text.search(
-    /(?:^|\n|\.)(¡?Hola\b|Sí,\s*claro\b|Claro\b|Tenemos\b|Manejamos\b|Estamos\b|Nuestro horario\b|La dirección\b)/i
+    /(?:^|\n|\.)(¡?Hola\b|S[ií],?\s*claro\b|Claro\b|Tenemos\b|Manejamos\b|Estamos\b|Nuestro horario\b|La dirección\b|Hay\b|Te\s+(?:env[ií]o|mando|paso)\b)/i
   )
   if (directStart > 0) {
     const preamble = text.slice(0, directStart)
@@ -478,7 +493,7 @@ function looksLikeMetaNarration(reply: string): boolean {
     /\b(el usuario|la usuaria|el cliente|la clienta)\s+est[aá]\s+(preguntando|solicitando|buscando|pidiendo)/i.test(
       reply
     ) ||
-    /\b(como vendedor|como asistente|debo responder|debo ser|mi objetivo|plan:|razonamiento|información disponible:|cordial,\s*direct[ao]|siguiendo la regla)/i.test(
+    /\b(como vendedor|como asistente|debo responder|debo ser|mi objetivo|plan:|razonamiento|información disponible:|cordial,\s*direct[ao]|siguiendo la regla|revisando el cat[aá]logo|respuesta a generar|cat[aá]logo disponible)/i.test(
       reply
     )
   )

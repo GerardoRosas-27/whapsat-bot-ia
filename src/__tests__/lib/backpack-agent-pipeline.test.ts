@@ -25,8 +25,21 @@ describe('runBackpackAgentTurn', () => {
     jest.restoreAllMocks()
   })
 
-  it('responde sin llamar al LLM cuando el producto específico no existe', async () => {
-    const fetchMock = jest.fn()
+  it('usa el LLM con el catálogo disponible para búsquedas de producto', async () => {
+    const fetchMock = jest.fn(async () =>
+      new Response(
+        JSON.stringify({
+          choices: [
+            {
+              message: {
+                content: 'No tengo confirmado ese modelo de dinosaurio en el catálogo.'
+              }
+            }
+          ]
+        }),
+        { status: 200, headers: { 'Content-Type': 'application/json' } }
+      )
+    )
     global.fetch = fetchMock as unknown as typeof fetch
 
     const reply = await runBackpackAgentTurn({
@@ -36,8 +49,8 @@ describe('runBackpackAgentTurn', () => {
       history: []
     })
 
-    expect(fetchMock).not.toHaveBeenCalled()
-    expect(reply).toContain('No encontré ese modelo')
+    expect(fetchMock).toHaveBeenCalled()
+    expect(reply).toBe('No tengo confirmado ese modelo de dinosaurio en el catálogo.')
   })
 
   it('bloquea respuestas con JSON o código antes de enviarlas al cliente', async () => {
@@ -66,5 +79,44 @@ describe('runBackpackAgentTurn', () => {
     expect(reply).toContain('Disculpa')
     expect(reply).not.toContain('{')
     expect(reply).not.toContain('reply')
+  })
+
+  it('recorta razonamiento pegado antes de la respuesta final', async () => {
+    global.fetch = jest.fn(async () =>
+      new Response(
+        JSON.stringify({
+          choices: [
+            {
+              message: {
+                content:
+                  'Cliente pregunta por mochilas de Batman.\n' +
+                  'Revisando el catálogo disponible:\n' +
+                  '1. *mochila de batman* | precio:$180.00 | stock:2\n' +
+                  'Respuesta a generar debe ser cordial y directa.Sí, tenemos la mochila de batman grande para escuela.'
+              }
+            }
+          ]
+        }),
+        { status: 200, headers: { 'Content-Type': 'application/json' } }
+      )
+    ) as unknown as typeof fetch
+
+    const reply = await runBackpackAgentTurn({
+      userText: '¿Tienes mochila de Batman?',
+      policy: { customerFacts: 'Horario 10:30 a 19:30.' },
+      products: [
+        {
+          ...fakeProducts[0],
+          id: 'batman',
+          name: 'mochila de batman',
+          description: 'mochila para escuela de batman grande',
+          price: 180,
+          stock: 2
+        }
+      ],
+      history: []
+    })
+
+    expect(reply).toBe('Sí, tenemos la mochila de batman grande para escuela.')
   })
 })
