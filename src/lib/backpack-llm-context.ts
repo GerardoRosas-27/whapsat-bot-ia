@@ -1,7 +1,7 @@
 import fs from 'fs'
 import path from 'path'
 import type { BackpackProduct } from '@prisma/client'
-import { genderLabel, useTypeLabel } from './backpack-product-similarity'
+import { genderLabel, productUseTypeLabel } from './backpack-product-similarity'
 import type {
   LlmImagePart,
   LlmTextPart,
@@ -46,7 +46,7 @@ export function formatCatalogForPrompt(products: BackpackProduct[]): string {
       const img = p.imageUrl?.trim()
         ? ` | imagen:${p.imageUrl.trim()}`
         : ' | sin imagen en catálogo'
-      return `${i + 1}. [id:${p.id}] *${p.name}* | género:${genderLabel(p.gender) || p.gender} | uso:${useTypeLabel(p.useType) || p.useType} | ${formatPrice(p.price)} | stock:${p.stock}${img}\n   ${p.description}`
+      return `${i + 1}. [id:${p.id}] *${p.name}* | género:${genderLabel(p.gender) || p.gender} | uso:${productUseTypeLabel(p.useType) || p.useType} | ${formatPrice(p.price)} | stock:${p.stock}${img}\n   ${p.description}`
     })
     .join('\n')
 }

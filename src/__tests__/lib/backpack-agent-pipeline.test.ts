@@ -305,7 +305,7 @@ describe('runBackpackAgentTurn', () => {
     global.fetch = fetchMock as unknown as typeof fetch
 
     const result = await runBackpackAgentTurnWithMeta({
-      userText: 'tienes algo bonito?',
+      userText: 'tienes alguna mochila bonita?',
       policy: { customerFacts: 'Horario configurado por empresa.' },
       products: fakeProducts,
       history: [
@@ -323,7 +323,8 @@ describe('runBackpackAgentTurn', () => {
     expect(result).toEqual({
       reply: '¿Buscas una mochila para escuela o para trabajo?',
       needsClarification: true,
-      exhaustedClarification: false
+      exhaustedClarification: false,
+      clarificationKey: expect.any(String)
     })
     expect(JSON.stringify(sentMessages)).not.toContain('mensaje 1')
     expect(JSON.stringify(sentMessages)).toContain('respuesta 1')
@@ -348,19 +349,21 @@ describe('runBackpackAgentTurn', () => {
     global.fetch = fetchMock as unknown as typeof fetch
 
     const result = await runBackpackAgentTurnWithMeta({
-      userText: 'tienes algo de ese?',
+      userText: 'tienes mochila de ese?',
       policy: { customerFacts: 'Horario configurado por empresa.' },
       products: fakeProducts,
       history: [],
-      clarificationAttempts: 3
+      clarificationAttempts: 3,
+      clarificationKey: 'consulta_productos:tienes mochila de ese'
     })
 
     expect(result).toEqual({
       reply: 'Por el momento no podemos atenderle.',
       needsClarification: false,
-      exhaustedClarification: true
+      exhaustedClarification: true,
+      clarificationKey: expect.any(String)
     })
-    expect(fetchMock).toHaveBeenCalledTimes(1)
+    expect(fetchMock).toHaveBeenCalledTimes(0)
   })
 
   it('pasa la política de entrega al LLM para que responda al cliente', async () => {
@@ -500,5 +503,348 @@ describe('runBackpackAgentTurn', () => {
     expect(reply).toContain('Las entregas se hacen solo en sucursal Centro')
     expect(reply).toContain('Para compras por caja podemos coordinar envío regional')
     expect(reply).not.toContain('Informar sobre')
+  })
+
+  it('con clasificador configurado primero decide el flujo y luego envía solo contexto de horarios', async () => {
+    const requests: Array<{ messages?: Array<{ role: string; content: string }> }> = []
+    global.fetch = jest.fn(async (_url, init) => {
+      const parsed = JSON.parse((init?.body as string) || '{}')
+      requests.push(parsed)
+      const isClassifier = requests.length === 1
+      return new Response(
+        JSON.stringify({
+          choices: [
+            {
+              message: {
+                content: isClassifier
+                  ? JSON.stringify({
+                      flujo: 'consulta_horarios',
+                      descripcion: 'quiere saber a qué hora abren y cierran'
+                    })
+                  : 'Abrimos de lunes a viernes de 8:15 a 17:45 horas.'
+              }
+            }
+          ]
+        }),
+        { status: 200, headers: { 'Content-Type': 'application/json' } }
+      )
+    }) as unknown as typeof fetch
+
+    const reply = await runBackpackAgentTurn({
+      userText: 'A qué hora abren?',
+      policy: {
+        flowClassifierInputFormat: '{}',
+        flowClassifierOutputFormat: '{"flujo":"consulta_horarios","descripcion":"..."}',
+        customerFacts: [
+          'Ubicación',
+          '• Sucursal Norte',
+          'Horario de atención',
+          '• De lunes a viernes de 8:15 a 17:45 horas',
+          'Envíos y entregas',
+          '• No hay entregas fuera de sucursal.'
+        ].join('\n')
+      },
+      products: fakeProducts,
+      history: [
+        { role: 'user', content: 'mensaje viejo 1' },
+        { role: 'assistant', content: 'respuesta vieja 1' },
+        { role: 'user', content: 'mensaje reciente' }
+      ]
+    })
+
+    const classifierPayload = requests[0].messages?.[1]?.content ?? ''
+    const finalSystemPrompt = requests[1].messages?.[0]?.content ?? ''
+
+    expect(global.fetch).toHaveBeenCalledTimes(2)
+    expect(classifierPayload).toContain('historial_ultimos_5_mensajes')
+    expect(classifierPayload).toContain('mensaje reciente')
+    expect(classifierPayload).not.toContain('Mochila Escolar Luna')
+    expect(finalSystemPrompt).toContain('Flujo activado: consulta_horarios')
+    expect(finalSystemPrompt).toContain('De lunes a viernes de 8:15 a 17:45 horas')
+    expect(finalSystemPrompt).not.toContain('Mochila Escolar Luna')
+    expect(finalSystemPrompt).not.toContain('No hay entregas fuera de sucursal')
+    expect(reply).toBe('Abrimos de lunes a viernes de 8:15 a 17:45 horas.')
+  })
+
+  it('con clasificador configurado limita consulta de productos al catálogo y no manda datos de empresa', async () => {
+    const requests: Array<{ messages?: Array<{ role: string; content: string }> }> = []
+    global.fetch = jest.fn(async (_url, init) => {
+      const parsed = JSON.parse((init?.body as string) || '{}')
+      requests.push(parsed)
+      return new Response(
+        JSON.stringify({
+          choices: [
+            {
+              message: {
+                content:
+                  requests.length === 1
+                    ? '{"flujo":"consulta_productos","descripcion":"busca mochila negra escolar"}'
+                    : 'Sí, tenemos la Mochila Escolar Luna en $450.00, con 3 en existencia.'
+              }
+            }
+          ]
+        }),
+        { status: 200, headers: { 'Content-Type': 'application/json' } }
+      )
+    }) as unknown as typeof fetch
+
+    const reply = await runBackpackAgentTurn({
+      userText: 'Tienes mochila negra escolar?',
+      policy: {
+        flowClassifierInputFormat: '{}',
+        flowClassifierOutputFormat: '{"flujo":"consulta_productos","descripcion":"..."}',
+        customerFacts: 'Horario de atención: lunes a viernes de 8 a 5.\nUbicación: Sucursal Centro.'
+      },
+      products: fakeProducts,
+      history: []
+    })
+
+    const finalSystemPrompt = requests[1].messages?.[0]?.content ?? ''
+    expect(global.fetch).toHaveBeenCalledTimes(2)
+    expect(finalSystemPrompt).toContain('Flujo activado: consulta_productos')
+    expect(finalSystemPrompt).toContain('Mochila Escolar Luna')
+    expect(finalSystemPrompt).not.toContain('Horario de atención: lunes a viernes')
+    expect(finalSystemPrompt).not.toContain('Ubicación: Sucursal Centro')
+    expect(reply).toBe('Sí, tenemos la Mochila Escolar Luna en $450.00, con 3 en existencia.')
+  })
+
+  it('recupera modelos reforzados cuando la descripcion del análisis conserva palabras clave', async () => {
+    const requests: Array<{ messages?: Array<{ role: string; content: string }> }> = []
+    global.fetch = jest.fn(async (_url, init) => {
+      const parsed = JSON.parse((init?.body as string) || '{}')
+      requests.push(parsed)
+      return new Response(
+        JSON.stringify({
+          choices: [
+            {
+              message: {
+                content:
+                  requests.length === 1
+                    ? '{"flujo":"consulta_productos","descripcion":"busca mochilas reforzadas"}'
+                    : 'Sí, tenemos la mochila reforzada Lona Pro en $300.00.'
+              }
+            }
+          ]
+        }),
+        { status: 200, headers: { 'Content-Type': 'application/json' } }
+      )
+    }) as unknown as typeof fetch
+
+    const reply = await runBackpackAgentTurn({
+      userText: 'Y tienes mochilas reforzada?',
+      policy: {
+        flowClassifierInputFormat: '{}',
+        flowClassifierSystemPrompt:
+          'Clasifica el flujo y conserva palabras clave como reforzada en la descripcion.',
+        flowClassifierOutputFormat: '{"flujo":"consulta_productos","descripcion":"..."}',
+        customerFacts: 'Horario de atención: lunes a viernes de 8 a 5.'
+      },
+      products: [
+        {
+          ...fakeProducts[0],
+          id: 'bitono',
+          name: 'bitono',
+          description: 'mochila escolar sencilla',
+          price: 175,
+          stock: 5
+        },
+        {
+          ...fakeProducts[0],
+          id: 'lona-pro',
+          name: 'mochila reforzada Lona Pro',
+          description: 'mochila escolar de lona reforzada para uso diario',
+          price: 300,
+          stock: 4
+        },
+        {
+          ...fakeProducts[0],
+          id: 'candado',
+          name: 'diamante de candado',
+          description: 'mochila grande con costuras reforzadas y candado',
+          price: 240,
+          stock: 10
+        }
+      ],
+      history: []
+    })
+
+    const finalSystemPrompt = requests[1].messages?.[0]?.content ?? ''
+    const classifierSystemPrompt = requests[0].messages?.[0]?.content ?? ''
+    expect(global.fetch).toHaveBeenCalledTimes(2)
+    expect(classifierSystemPrompt).toContain('conserva palabras clave')
+    expect(finalSystemPrompt).toContain('mochila reforzada Lona Pro')
+    expect(finalSystemPrompt).toContain('diamante de candado')
+    expect(finalSystemPrompt).not.toContain('*bitono*')
+    expect(reply).toBe('Sí, tenemos la mochila reforzada Lona Pro en $300.00.')
+  })
+
+  it('pide más detalles cuando una búsqueda específica no tiene coincidencias reales', async () => {
+    const requests: Array<{ messages?: Array<{ role: string; content: string }> }> = []
+    global.fetch = jest.fn(async (_url, init) => {
+      const parsed = JSON.parse((init?.body as string) || '{}')
+      requests.push(parsed)
+      return new Response(
+        JSON.stringify({
+          choices: [
+            {
+              message: {
+                content:
+                  requests.length === 1
+                    ? '{"flujo":"consulta_productos","descripcion":"busca mochilas con ruedas"}'
+                    : '¿Me puedes decir si buscas mochila escolar, de trabajo o algún color específico?'
+              }
+            }
+          ]
+        }),
+        { status: 200, headers: { 'Content-Type': 'application/json' } }
+      )
+    }) as unknown as typeof fetch
+
+    const result = await runBackpackAgentTurnWithMeta({
+      userText: 'Tienes mochilas con ruedas?',
+      policy: {
+        flowClassifierInputFormat: '{}',
+        flowClassifierOutputFormat: '{"flujo":"consulta_productos","descripcion":"..."}',
+        customerFacts: 'Horario de atención: lunes a viernes de 8 a 5.'
+      },
+      products: [
+        {
+          ...fakeProducts[0],
+          id: 'bitono',
+          name: 'bitono',
+          description: 'mochila escolar sencilla',
+          price: 175,
+          stock: 5
+        }
+      ],
+      history: []
+    })
+
+    expect(global.fetch).toHaveBeenCalledTimes(2)
+    expect(result).toEqual({
+      reply: '¿Me puedes decir si buscas mochila escolar, de trabajo o algún color específico?',
+      needsClarification: true,
+      exhaustedClarification: false,
+      clarificationKey: expect.any(String)
+    })
+  })
+
+  it('para modelos de personajes pide qué personaje busca sin heredar intentos de otra consulta', async () => {
+    const requests: Array<{ messages?: Array<{ role: string; content: string }> }> = []
+    global.fetch = jest.fn(async (_url, init) => {
+      const parsed = JSON.parse((init?.body as string) || '{}')
+      requests.push(parsed)
+      return new Response(
+        JSON.stringify({
+          choices: [
+            {
+              message: {
+                content:
+                  requests.length === 1
+                    ? '{"flujo":"consulta_productos","descripcion":"busca modelos de personajes"}'
+                    : '¿Qué personaje buscas en la mochila?'
+              }
+            }
+          ]
+        }),
+        { status: 200, headers: { 'Content-Type': 'application/json' } }
+      )
+    }) as unknown as typeof fetch
+
+    const result = await runBackpackAgentTurnWithMeta({
+      userText: 'Que modelos de personajes tienes ?',
+      policy: {
+        flowClassifierInputFormat: '{}',
+        flowClassifierOutputFormat: '{"flujo":"consulta_productos","descripcion":"..."}',
+        customerFacts: 'Horario de atención: lunes a viernes de 8 a 5.'
+      },
+      products: [
+        {
+          ...fakeProducts[0],
+          id: 'bitono',
+          name: 'bitono',
+          description: 'mochila escolar sencilla',
+          price: 175,
+          stock: 5
+        }
+      ],
+      history: [],
+      clarificationAttempts: 3,
+      clarificationKey: 'consulta_productos:busca mochilas con ruedas'
+    })
+
+    expect(global.fetch).toHaveBeenCalledTimes(2)
+    expect(result.reply).toBe('¿Qué personaje buscas en la mochila?')
+    expect(result.needsClarification).toBe(true)
+    expect(result.exhaustedClarification).toBe(false)
+    expect(result.clarificationKey).toContain('personajes')
+  })
+
+  it('fuera de alcance también entra al ciclo de aclaración hasta 3 veces', async () => {
+    global.fetch = jest.fn(async () =>
+      new Response(
+        JSON.stringify({
+          choices: [
+            {
+              message: {
+                content: '{"flujo":"fuera_de_alcance","descripcion":"pide información fuera de la tienda"}'
+              }
+            }
+          ]
+        }),
+        { status: 200, headers: { 'Content-Type': 'application/json' } }
+      )
+    ) as unknown as typeof fetch
+
+    const result = await runBackpackAgentTurnWithMeta({
+      userText: 'háblame de otra cosa',
+      policy: {
+        flowClassifierInputFormat: '{}',
+        flowClassifierOutputFormat: '{"flujo":"fuera_de_alcance","descripcion":"..."}',
+        customerFacts: 'Horario 10:30 a 19:30.'
+      },
+      products: fakeProducts,
+      history: [],
+      clarificationAttempts: 3,
+      clarificationKey: 'fuera_de_alcance:otra consulta anterior'
+    })
+
+    expect(global.fetch).toHaveBeenCalledTimes(1)
+    expect(result.reply).toContain('Vendemos mochilas')
+    expect(result.needsClarification).toBe(true)
+    expect(result.exhaustedClarification).toBe(false)
+  })
+
+  it('con clasificador configurado responde guía cuando el mensaje queda fuera de alcance', async () => {
+    global.fetch = jest.fn(async () =>
+      new Response(
+        JSON.stringify({
+          choices: [
+            {
+              message: {
+                content: '{"flujo":"fuera_de_alcance","descripcion":"pide una receta"}'
+              }
+            }
+          ]
+        }),
+        { status: 200, headers: { 'Content-Type': 'application/json' } }
+      )
+    ) as unknown as typeof fetch
+
+    const result = await runBackpackAgentTurnWithMeta({
+      userText: 'Dame una receta de pastel',
+      policy: {
+        flowClassifierInputFormat: '{}',
+        flowClassifierOutputFormat: '{"flujo":"fuera_de_alcance","descripcion":"..."}',
+        customerFacts: 'Horario 10:30 a 19:30.'
+      },
+      products: fakeProducts,
+      history: []
+    })
+
+    expect(global.fetch).toHaveBeenCalledTimes(1)
+    expect(result.reply).toContain('Vendemos mochilas')
+    expect(result.reply).toContain('Dame más detalles')
+    expect(result.needsClarification).toBe(true)
   })
 })

@@ -15,8 +15,15 @@ import {
   getBackpackProductMatchLimit,
   getBackpackTextSimilarityThreshold,
   genderLabel,
-  useTypeLabel
+  productUseTypeLabel
 } from './backpack-product-similarity'
+import {
+  analyzeBackpackFlow,
+  buildBackpackFlowGroundingContext,
+  formatBackpackFlowGroundingContext,
+  type BackpackFlowGroundingContext,
+  type BackpackFlowName
+} from './backpack-flow-router'
 
 export type BackpackAgentHistoryTurn = {
   role: 'user' | 'assistant'
@@ -27,6 +34,9 @@ export type BackpackAgentPolicySlice = {
   customerFacts: string
   rulesForBot?: string
   interactionWorkflow?: string
+  flowClassifierSystemPrompt?: string | null
+  flowClassifierInputFormat?: string | null
+  flowClassifierOutputFormat?: string | null
 }
 
 export type BackpackAgentTurnInput = {
@@ -36,12 +46,14 @@ export type BackpackAgentTurnInput = {
   history: BackpackAgentHistoryTurn[]
   temperature?: number
   clarificationAttempts?: number
+  clarificationKey?: string | null
 }
 
 export type BackpackAgentTurnResult = {
   reply: string
   needsClarification: boolean
   exhaustedClarification: boolean
+  clarificationKey?: string
 }
 
 type AgentScope = 'product' | 'business' | 'mixed' | 'out_of_scope' | 'unknown'
@@ -53,6 +65,23 @@ type GroundedAgentContext = {
   businessFacts: string
   fallbackReply?: string
   searchSummary: string
+}
+
+function scopeFromFlow(flow: BackpackFlowName): AgentScope {
+  if (flow === 'consulta_productos') return 'product'
+  if (flow === 'fuera_de_alcance') return 'out_of_scope'
+  return 'business'
+}
+
+function toGroundedAgentContext(ctx: BackpackFlowGroundingContext): GroundedAgentContext {
+  return {
+    scope: scopeFromFlow(ctx.flow),
+    userText: ctx.analyzedRequest || ctx.userText,
+    products: ctx.products,
+    businessFacts: ctx.businessFacts,
+    fallbackReply: ctx.fallbackReply,
+    searchSummary: ctx.searchSummary
+  }
 }
 
 const DEFAULT_LLM_HISTORY_MESSAGES = 5
@@ -285,6 +314,10 @@ function normalizeText(value: string): string {
     .trim()
 }
 
+function buildClarificationKey(ctx: BackpackFlowGroundingContext): string {
+  return `${ctx.flow}:${normalizeText(ctx.analyzedRequest || ctx.userText).slice(0, 140)}`
+}
+
 const STOP_WORDS = new Set([
   'hola',
   'buenos',
@@ -347,6 +380,12 @@ const PRODUCT_TERMS = [
   'morral',
   'bolsa',
   'bolsas',
+  'preescolar',
+  'kinder',
+  'niño',
+  'niña',
+  'nino',
+  'nina',
   'escolar',
   'escuela',
   'clases',
@@ -363,7 +402,37 @@ const PRODUCT_TERMS = [
   'existencia',
   'disponible',
   'catalogo',
-  'modelo'
+  'modelo',
+  'personaje',
+  'personajes',
+  'caricatura',
+  'caricaturas',
+  'dibujo',
+  'dibujos',
+  'anime',
+  'stitch',
+  'sitichet',
+  'sonic',
+  'mario',
+  'kuromi',
+  'dragonball',
+  'dragon',
+  'goku',
+  'naruto',
+  'nike',
+  'nik',
+  'adidas',
+  'puma',
+  'reforzada',
+  'reforzado',
+  'impermeable',
+  'lona',
+  'mezclilla',
+  'poliester',
+  'poliéster',
+  'tela',
+  'telas',
+  'candado'
 ]
 
 const BUSINESS_TERMS = [
@@ -568,7 +637,7 @@ function formatProductsForGrounding(products: BackpackProduct[]): string {
   return products
     .map(
       (p, index) =>
-        `${index + 1}. *${p.name}* | precio:$${Number(p.price).toFixed(2)} | stock:${p.stock} | género:${genderLabel(p.gender) || p.gender} | uso:${useTypeLabel(p.useType) || p.useType}\n   ${p.description}`
+        `${index + 1}. *${p.name}* | precio:$${Number(p.price).toFixed(2)} | stock:${p.stock} | género:${genderLabel(p.gender) || p.gender} | uso:${productUseTypeLabel(p.useType) || p.useType}\n   ${p.description}`
     )
     .join('\n')
 }
@@ -731,12 +800,14 @@ async function buildClarifyingQuestion(input: {
   ctx: GroundedAgentContext
   history: BackpackAgentHistoryTurn[]
   attemptsUsed: number
+  clarificationKey: string
 }): Promise<BackpackAgentTurnResult> {
   if (input.attemptsUsed >= MAX_CLARIFICATION_ATTEMPTS) {
     return {
       reply: FINAL_UNANSWERED_FALLBACK,
       needsClarification: false,
-      exhaustedClarification: true
+      exhaustedClarification: true,
+      clarificationKey: input.clarificationKey
     }
   }
 
@@ -782,7 +853,8 @@ Formula una pregunta para obtener el detalle faltante y poder buscar mejor.`
         return {
           reply: question,
           needsClarification: true,
-          exhaustedClarification: false
+          exhaustedClarification: false,
+          clarificationKey: input.clarificationKey
         }
       }
     } catch (error) {
@@ -799,7 +871,8 @@ Formula una pregunta para obtener el detalle faltante y poder buscar mejor.`
   return {
     reply: FINAL_UNANSWERED_FALLBACK,
     needsClarification: false,
-    exhaustedClarification: true
+    exhaustedClarification: true,
+    clarificationKey: input.clarificationKey
   }
 }
 
@@ -837,41 +910,66 @@ export async function runBackpackAgentTurn(input: BackpackAgentTurnInput): Promi
 export async function runBackpackAgentTurnWithMeta(
   input: BackpackAgentTurnInput
 ): Promise<BackpackAgentTurnResult> {
-  const catalogText = formatCatalogForPrompt(input.products)
   const contextFile = loadBackpackAgentContext()
   const userText =
     input.userText.trim() ||
     '(El cliente envió un mensaje vacío. Pide amablemente que escriba su pregunta sobre mochilas.)'
-  const groundedContext = buildGroundingContext({
+  const flowAnalysis = await analyzeBackpackFlow({
+    userText,
+    history: input.history,
+    config: {
+      systemPrompt: input.policy.flowClassifierSystemPrompt,
+      inputFormat: input.policy.flowClassifierInputFormat,
+      outputFormat: input.policy.flowClassifierOutputFormat
+    }
+  })
+  const flowContext = buildBackpackFlowGroundingContext({
+    analysis: flowAnalysis,
     userText,
     customerFacts: input.policy.customerFacts,
     products: input.products
   })
-  const clarificationAttempts = Math.max(0, Math.floor(input.clarificationAttempts ?? 0))
+  const groundedContext = toGroundedAgentContext(flowContext)
+  const catalogText = formatCatalogForPrompt(flowContext.products)
+  const clarificationKey = buildClarificationKey(flowContext)
+  const clarificationAttempts =
+    input.clarificationKey === clarificationKey
+      ? Math.max(0, Math.floor(input.clarificationAttempts ?? 0))
+      : 0
 
   if (groundedContext.fallbackReply) {
     if (groundedContext.scope === 'out_of_scope') {
+      if (clarificationAttempts >= MAX_CLARIFICATION_ATTEMPTS) {
+        return {
+          reply: FINAL_UNANSWERED_FALLBACK,
+          needsClarification: false,
+          exhaustedClarification: true,
+          clarificationKey
+        }
+      }
       return {
         reply: groundedContext.fallbackReply,
-        needsClarification: false,
-        exhaustedClarification: false
+        needsClarification: true,
+        exhaustedClarification: false,
+        clarificationKey
       }
     }
     return buildClarifyingQuestion({
       userText,
       ctx: groundedContext,
       history: input.history,
-      attemptsUsed: clarificationAttempts
+      attemptsUsed: clarificationAttempts,
+      clarificationKey
     })
   }
 
   const systemPrompt = buildBackpackAgentSystemPrompt({
     contextFile,
-    customerFacts: input.policy.customerFacts,
+    customerFacts: flowContext.businessFacts,
     rulesForBot: input.policy.rulesForBot,
     interactionWorkflow: input.policy.interactionWorkflow,
     catalogText,
-    retrievedContext: formatGroundedContext(groundedContext)
+    retrievedContext: formatBackpackFlowGroundingContext(flowContext)
   })
 
   const historyMessages: LlmMessage[] = input.history.slice(-getBackpackLlmHistoryMessages()).map((t) => ({
@@ -884,7 +982,10 @@ export async function runBackpackAgentTurnWithMeta(
     ...historyMessages,
     {
       role: 'user',
-      content: `Cliente: ${userText}\nEscribe únicamente la respuesta final para el cliente. No expliques qué entendiste ni cómo vas a responder.`
+      content: `Mensaje original del cliente: ${userText}
+Descripcion procesada por el analizador interno: ${flowContext.analyzedRequest}
+Flujo activado: ${flowContext.flow}
+Escribe únicamente la respuesta final para el cliente. No expliques qué entendiste ni cómo vas a responder.`
     }
   ]
 
@@ -904,7 +1005,8 @@ export async function runBackpackAgentTurnWithMeta(
       userText,
       ctx: groundedContext,
       history: input.history,
-      attemptsUsed: clarificationAttempts
+      attemptsUsed: clarificationAttempts,
+      clarificationKey
     })
   }
   reply = sanitizeLlmReplyForCustomer(reply)
@@ -915,13 +1017,15 @@ export async function runBackpackAgentTurnWithMeta(
       userText,
       ctx: groundedContext,
       history: input.history,
-      attemptsUsed: clarificationAttempts
+      attemptsUsed: clarificationAttempts,
+      clarificationKey
     })
   }
   return {
     reply,
     needsClarification: false,
-    exhaustedClarification: false
+    exhaustedClarification: false,
+    clarificationKey
   }
 }
 

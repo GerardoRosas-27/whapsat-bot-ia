@@ -187,14 +187,17 @@ model BackpackProduct {
 
 // Reglas e información del negocio para el bot de mochilas (una fila)
 model BackpackBotPolicy {
-  id                  String   @id @default("singleton")
-  rulesForBot         String   @default("") // Instrucciones / límites (system prompt)
-  customerFacts       String   @default("") // Horarios, ubicación, políticas (system prompt)
-  interactionWorkflow String   @default("") // Flujo de trabajo documentado (system prompt + editable en admin)
-  googleMapsUrl       String?  // Enlace de Google Maps para ubicación del negocio
-  sketchImageUrl      String?  // URL de croquis o imagen de referencia para llegar
-  createdAt           DateTime @default(now())
-  updatedAt           DateTime @updatedAt
+  id                         String   @id @default("singleton")
+  rulesForBot                String   @default("") // Instrucciones / límites (system prompt)
+  customerFacts              String   @default("") // Horarios, ubicación, políticas (system prompt)
+  interactionWorkflow        String   @default("") // Flujo de trabajo documentado (system prompt + editable en admin)
+  flowClassifierSystemPrompt String   @default("") // Reglas del system prompt para el clasificador interno
+  flowClassifierInputFormat  String   @default("") // JSON de referencia que recibe el clasificador interno
+  flowClassifierOutputFormat String   @default("") // JSON con flujo + descripcion procesada que debe regresar el clasificador interno
+  googleMapsUrl              String?  // Enlace de Google Maps para ubicación del negocio
+  sketchImageUrl             String?  // URL de croquis o imagen de referencia para llegar
+  createdAt                  DateTime @default(now())
+  updatedAt                  DateTime @updatedAt
 }
 
 model BackpackAdminNumber {

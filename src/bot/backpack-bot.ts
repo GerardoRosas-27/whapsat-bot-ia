@@ -42,6 +42,7 @@ interface BackpackUserSession {
     llmHistory?: BackpackLlmHistoryTurn[]
     agentHistory?: BackpackAgentHistoryTurn[]
     agentClarificationAttempts?: number
+    agentClarificationKey?: string
   } & Record<string, unknown>
   createdAt: Date
   updatedAt: Date
@@ -67,6 +68,45 @@ const AGENT_EXIT_COMMANDS = new Set([
 
 const BACKPACK_POLICY_CACHE_MS = 45_000
 const BACKPACK_AUTH_PATH = '.wwebjs_auth_backpack'
+const DEFAULT_FLOW_CLASSIFIER_INPUT_FORMAT = `{
+  "historial_ultimos_5_mensajes": [
+    { "role": "user", "content": "mensaje previo" },
+    { "role": "assistant", "content": "respuesta previa" }
+  ],
+  "mensaje_actual": "texto actual del cliente",
+  "flujos_disponibles": [
+    "consulta_ubicacion",
+    "consulta_horarios",
+    "consulta_politicas",
+    "consulta_productos",
+    "fuera_de_alcance"
+  ]
+}`
+const DEFAULT_FLOW_CLASSIFIER_OUTPUT_FORMAT = `{
+  "flujo": "consulta_productos",
+  "descripcion": "Resumen sintetizado y procesado por el LLM de lo que quiere el usuario, considerando el mensaje actual y los últimos 5 mensajes del historial. No inventes datos."
+}`
+const DEFAULT_FLOW_CLASSIFIER_SYSTEM_PROMPT = `Eres un clasificador interno y vendedor experto de mochilas escolares, de preescolar y para trabajo.
+Conoces mochilas reforzadas de diferentes materiales y telas: mezclilla, lona, poliéster, impermeables, con candado, para laptop y de uso diario.
+También conoces mochilas de personajes populares y actuales para escuela y preescolar: Stitch, Sonic, Mario, Kuromi, Dragon Ball, Goku, Naruto, caricaturas, dibujos y anime.
+También conoces mochilas de marcas deportivas o estilo deportivo como Nike, Adidas y Puma.
+Tu respuesta NO se enviará al cliente. Solo decide qué flujo debe activarse.
+
+Flujos permitidos:
+- consulta_ubicacion: dirección, Google Maps, croquis, cómo llegar.
+- consulta_horarios: apertura, cierre, días u horario.
+- consulta_politicas: envíos, entregas, mayoreo, menudeo, pagos, políticas.
+- consulta_productos: catálogo, modelos, precios, stock, fotos o características de mochilas.
+- fuera_de_alcance: cualquier tema que no sea tienda, mochilas, ubicación, horarios o políticas.
+
+Reglas:
+1. Usa los últimos 5 mensajes para entender referencias como "ese", "la negra", "lo de ayer" o respuestas cortas del usuario.
+2. Si el cliente menciona personajes, caricaturas, dibujos, anime, preescolar, kinder, niñas/niños, marcas deportivas o materiales de mochila, clasifica como consulta_productos.
+3. En "descripcion" conserva palabras clave de búsqueda: personaje, personajes, Stitch, Sonic, Mario, Kuromi, Dragon Ball, Goku, Naruto, anime, caricatura, dibujo, preescolar, kinder, Nike, Adidas, Puma, reforzada, reforzado, mezclilla, lona, poliéster, impermeable, candado, laptop, escolar, trabajo, colores, tamaño, uso y género.
+4. Sintetiza, pero no borres atributos importantes. Ejemplos: "Que modelos de personajes tienes?" -> "busca mochilas de personajes"; "Y tienes mochilas reforzada?" -> "busca mochilas reforzadas"; "tienes para preescolar de sonic?" -> "busca mochila preescolar de Sonic".
+5. Si el cliente pregunta algo ambiguo pero parece relacionado con mochilas, usa consulta_productos y pide que la descripcion conserve la duda principal para que el siguiente LLM pueda pedir detalles.
+6. Si no puedes determinar que el cliente pide ubicación, horarios, políticas o productos de mochilas, usa fuera_de_alcance.
+7. No inventes marcas, modelos, precios ni datos que el usuario no haya pedido.`
 
 class BackpackWhatsAppBot {
   private client: Client
@@ -80,6 +120,9 @@ class BackpackWhatsAppBot {
     rulesForBot: string
     customerFacts: string
     interactionWorkflow: string
+    flowClassifierSystemPrompt: string | null
+    flowClassifierInputFormat: string | null
+    flowClassifierOutputFormat: string | null
     googleMapsUrl: string | null
     sketchImageUrl: string | null
     fetchedAt: number
@@ -362,6 +405,9 @@ class BackpackWhatsAppBot {
     rulesForBot: string
     customerFacts: string
     interactionWorkflow: string
+    flowClassifierSystemPrompt: string | null
+    flowClassifierInputFormat: string | null
+    flowClassifierOutputFormat: string | null
     googleMapsUrl: string | null
     sketchImageUrl: string | null
   }> {
@@ -374,6 +420,9 @@ class BackpackWhatsAppBot {
         rulesForBot: this.policyCache.rulesForBot,
         customerFacts: this.policyCache.customerFacts,
         interactionWorkflow: this.policyCache.interactionWorkflow,
+        flowClassifierSystemPrompt: this.policyCache.flowClassifierSystemPrompt,
+        flowClassifierInputFormat: this.policyCache.flowClassifierInputFormat,
+        flowClassifierOutputFormat: this.policyCache.flowClassifierOutputFormat,
         googleMapsUrl: this.policyCache.googleMapsUrl,
         sketchImageUrl: this.policyCache.sketchImageUrl
       }
@@ -392,15 +441,38 @@ class BackpackWhatsAppBot {
       .filter(Boolean)
       .join('\n')
     const interactionWorkflow = row?.interactionWorkflow?.trim() ?? ''
+    const flowClassifierSystemPrompt =
+      row?.flowClassifierSystemPrompt?.trim() || DEFAULT_FLOW_CLASSIFIER_SYSTEM_PROMPT
+    const flowClassifierInputFormat =
+      row?.flowClassifierInputFormat?.trim() || DEFAULT_FLOW_CLASSIFIER_INPUT_FORMAT
+    const rawFlowClassifierOutputFormat = row?.flowClassifierOutputFormat?.trim() || ''
+    const flowClassifierOutputFormat =
+      rawFlowClassifierOutputFormat &&
+      (rawFlowClassifierOutputFormat.includes('"descripcion"') ||
+        !rawFlowClassifierOutputFormat.includes('"solicitud"'))
+        ? rawFlowClassifierOutputFormat
+        : DEFAULT_FLOW_CLASSIFIER_OUTPUT_FORMAT
     this.policyCache = {
       rulesForBot,
       customerFacts,
       interactionWorkflow,
+      flowClassifierSystemPrompt,
+      flowClassifierInputFormat,
+      flowClassifierOutputFormat,
       googleMapsUrl,
       sketchImageUrl,
       fetchedAt: now
     }
-    return { rulesForBot, customerFacts, interactionWorkflow, googleMapsUrl, sketchImageUrl }
+    return {
+      rulesForBot,
+      customerFacts,
+      interactionWorkflow,
+      flowClassifierSystemPrompt,
+      flowClassifierInputFormat,
+      flowClassifierOutputFormat,
+      googleMapsUrl,
+      sketchImageUrl
+    }
   }
 
   private static readonly WHATSAPP_REPLY_MAX = 3900
@@ -604,14 +676,24 @@ class BackpackWhatsAppBot {
     work: () => Promise<T>
   ): Promise<T> {
     const chat = await message.getChat().catch(() => null)
-    try {
-      await chat?.sendStateTyping()
-    } catch {
-      /* ignore typing state */
+    let refreshingTyping = false
+    const sendTyping = async () => {
+      if (!chat || refreshingTyping) return
+      refreshingTyping = true
+      try {
+        await chat.sendStateTyping()
+      } catch {
+        /* ignore typing state */
+      } finally {
+        refreshingTyping = false
+      }
     }
+    await sendTyping()
+    const typingInterval = setInterval(sendTyping, 4_000)
     try {
       return await work()
     } finally {
+      clearInterval(typingInterval)
       try {
         await chat?.clearState()
       } catch {
@@ -934,6 +1016,7 @@ class BackpackWhatsAppBot {
     const session = await this.getSession(phoneNumber)
     const prevHistory = session.context?.agentHistory ?? []
     const clarificationAttempts = session.context?.agentClarificationAttempts ?? 0
+    const clarificationKey = session.context?.agentClarificationKey ?? null
     console.log(
       `[BackpackBot] LLM texto para ${phoneNumber} | productos=${products.length} | modelo=${getLlmModel()} | base=${getLlmBaseUrl()}`
     )
@@ -946,12 +1029,16 @@ class BackpackWhatsAppBot {
           policy: {
             customerFacts: policy.customerFacts,
             rulesForBot: policy.rulesForBot,
-            interactionWorkflow: policy.interactionWorkflow
+            interactionWorkflow: policy.interactionWorkflow,
+            flowClassifierSystemPrompt: policy.flowClassifierSystemPrompt,
+            flowClassifierInputFormat: policy.flowClassifierInputFormat,
+            flowClassifierOutputFormat: policy.flowClassifierOutputFormat
           },
           products,
           history: prevHistory,
           temperature: 0.2,
-          clarificationAttempts
+          clarificationAttempts,
+          clarificationKey
         })
       } catch (err) {
         console.error('[BackpackBot] Agente IA no disponible:', err)
@@ -994,11 +1081,14 @@ class BackpackWhatsAppBot {
       nextHistory.shift()
     }
     const nextClarificationAttempts = turn.needsClarification
-      ? clarificationAttempts + 1
+      ? turn.clarificationKey === clarificationKey
+        ? clarificationAttempts + 1
+        : 1
       : 0
     await this.updateSessionState(phoneNumber, 'agent', {
       agentHistory: nextHistory,
-      agentClarificationAttempts: nextClarificationAttempts
+      agentClarificationAttempts: nextClarificationAttempts,
+      agentClarificationKey: turn.needsClarification ? turn.clarificationKey : undefined
     })
   }
 

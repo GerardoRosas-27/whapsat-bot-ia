@@ -124,6 +124,18 @@ mochila escolar de iroman grande reforzada`,
     expect(matches[0].matchedBy).toBe('description')
   })
 
+  it('encuentra modelos reforzados aunque la consulta sea corta', () => {
+    const matches = findSimilarBackpackProducts('Y tienes mochilas reforzada?', products, {
+      limit: 5
+    })
+
+    expect(matches.map((match) => match.product.name)).toEqual([
+      'lona de candado',
+      'mochila de iroman'
+    ])
+    expect(matches.every((match) => match.matchedBy === 'description')).toBe(true)
+  })
+
   it('encuentra mochilas escolares para mujer por género y uso', () => {
     const matches = findSimilarBackpackProducts(
       'Mochilas escolar para mujer cuáles tienes',

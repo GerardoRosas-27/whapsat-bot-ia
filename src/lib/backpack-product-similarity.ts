@@ -122,7 +122,7 @@ function attributeSimilarityForQuery(
   )
   const queryTerms = normalizedText
     .split(' ')
-    .filter((term) => term.length >= 3 && !isQueryNoiseTerm(term))
+    .flatMap(querySearchTerms)
   if (queryTerms.length === 0) return descriptionSimilarity
 
   const attributeText = normalizeCatalogText(buildProductAttributeSearchText(product))
@@ -140,6 +140,12 @@ function attributeSimilarityForQuery(
 function isQueryNoiseTerm(term: string): boolean {
   return new Set([
     'hola',
+    'y',
+    'o',
+    'me',
+    'busca',
+    'buscar',
+    'buscan',
     'mochila',
     'mochilas',
     'modelo',
@@ -156,16 +162,34 @@ function isQueryNoiseTerm(term: string): boolean {
     'que',
     'qué',
     'hay',
+    'disponible',
+    'disponibles',
     'manejamos',
     'manejas'
   ]).has(term)
+}
+
+function querySearchTerms(term: string): string[] {
+  if (term.length < 3 || isQueryNoiseTerm(term)) return []
+  const variants = searchTermVariants(term)
+  const preferred = variants.length > 1 ? variants.slice(1) : variants
+  return preferred.filter(
+    (variant) => variant.length >= 3 && !isQueryNoiseTerm(variant)
+  )
+}
+
+function searchTermVariants(term: string): string[] {
+  const variants = [term]
+  if (term.endsWith('es') && term.length > 5) variants.push(term.slice(0, -2))
+  if (term.endsWith('s') && term.length > 4) variants.push(term.slice(0, -1))
+  return variants
 }
 
 function buildProductAttributeSearchText(product: CatalogProduct): string {
   return [
     product.description,
     genderLabel(product.gender),
-    useTypeLabel(product.useType)
+    productUseTypeLabel(product.useType)
   ]
     .filter(Boolean)
     .join(' ')
@@ -178,7 +202,7 @@ export function genderLabel(gender: string | null | undefined): string {
   return ''
 }
 
-export function useTypeLabel(useType: string | null | undefined): string {
+export function productUseTypeLabel(useType: string | null | undefined): string {
   if (useType === 'school') return 'escolar escuela clases'
   if (useType === 'work') return 'trabajo oficina'
   return ''
