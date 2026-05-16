@@ -1,3 +1,5 @@
+import fs from 'fs'
+import path from 'path'
 import { runBackpackLlmTurn, TINY_PNG_DATA_URL } from '@/modules/backpack/domain'
 import type { BackpackProduct } from '@prisma/client'
 
@@ -23,20 +25,36 @@ const fakeProducts: BackpackProduct[] = [
   }
 ]
 
+const testCatalogImageUrl = '/test-catalog-image.png'
+
+function writeTestCatalogImage() {
+  const [, base64] = TINY_PNG_DATA_URL.split(',')
+  const filePath = path.join(process.cwd(), 'public', testCatalogImageUrl.replace(/^\//, ''))
+  fs.mkdirSync(path.dirname(filePath), { recursive: true })
+  fs.writeFileSync(filePath, Buffer.from(base64, 'base64'))
+}
+
+function deleteTestCatalogImage() {
+  const filePath = path.join(process.cwd(), 'public', testCatalogImageUrl.replace(/^\//, ''))
+  if (fs.existsSync(filePath)) fs.unlinkSync(filePath)
+}
+
 describe('runBackpackLlmTurn', () => {
   const originalFetch = global.fetch
 
   afterEach(() => {
     global.fetch = originalFetch
+    deleteTestCatalogImage()
   })
 
-  it('envía image_url en el último mensaje user cuando hay foto', async () => {
-    let parsed: { messages?: unknown[] } | null = null
+  it('compara la imagen del cliente contra una imagen del catálogo', async () => {
+    writeTestCatalogImage()
+    let parsed: { messages?: unknown[] } = {}
     global.fetch = jest.fn(async (_url, init) => {
       parsed = JSON.parse((init!.body as string) || '{}')
       return new Response(
         JSON.stringify({
-          choices: [{ message: { content: 'OK visión' } }]
+          choices: [{ message: { content: '{"similarity": 92}' } }]
         }),
         { status: 200, headers: { 'Content-Type': 'application/json' } }
       )
@@ -46,7 +64,7 @@ describe('runBackpackLlmTurn', () => {
       userText: '¿Tienen esta?',
       userImageDataUrl: TINY_PNG_DATA_URL,
       policy: emptyPolicy,
-      products: fakeProducts,
+      products: [{ ...fakeProducts[0], imageUrl: testCatalogImageUrl }],
       history: []
     })
 
@@ -58,10 +76,13 @@ describe('runBackpackLlmTurn', () => {
     expect(last.role).toBe('user')
     const str = JSON.stringify(last.content)
     expect(str).toContain('image_url')
+    expect(str).toContain('foto del cliente')
+    expect(str).toContain('foto del catálogo')
+    expect(str).toContain('data:image/png;base64,')
   })
 
   it('sin imagen, el user message es texto o array sin image_url de cliente', async () => {
-    let parsed: { messages?: unknown[] } | null = null
+    let parsed: { messages?: unknown[] } = {}
     global.fetch = jest.fn(async (_url, init) => {
       parsed = JSON.parse((init!.body as string) || '{}')
       return new Response(

@@ -21,7 +21,11 @@ import {
   runBackpackAgentTurn,
   type BackpackAgentHistoryTurn
 } from '../lib/backpack-agent-pipeline'
-import { findSimilarBackpackProducts } from '../lib/backpack-product-similarity'
+import {
+  findSimilarBackpackProducts,
+  getBackpackProductMatchLimit,
+  getBackpackTextSimilarityThreshold
+} from '../lib/backpack-product-similarity'
 
 /** URL pública de la app (para que WhatsApp pueda cargar imágenes). En producción define APP_PUBLIC_URL o NEXT_PUBLIC_APP_URL. */
 const APP_BASE_URL = process.env.APP_PUBLIC_URL || process.env.NEXT_PUBLIC_APP_URL || 'http://localhost:3000'
@@ -866,9 +870,10 @@ class BackpackWhatsAppBot {
     reply: string,
     products: Awaited<ReturnType<typeof prisma.backpackProduct.findMany>>
   ): Promise<void> {
+    const productLimit = getBackpackProductMatchLimit()
     const matched = findSimilarBackpackProducts(reply, products, {
-      threshold: 0.8,
-      limit: 3
+      threshold: getBackpackTextSimilarityThreshold(),
+      limit: productLimit
     }).map((match) => match.product)
     if (matched.length === 0) return
     console.log(
@@ -877,7 +882,7 @@ class BackpackWhatsAppBot {
         .join(', ')}`
     )
 
-    const toSend = matched.slice(0, 3)
+    const toSend = matched.slice(0, productLimit)
     for (const p of toSend) {
       try {
         const media = await this.createProductMedia(p.imageUrl)

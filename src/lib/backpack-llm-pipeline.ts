@@ -2,24 +2,21 @@ import type { BackpackProduct } from '@prisma/client'
 import {
   backpackLlmChat,
   getLlmMaxResponseTokens,
+  type LlmImagePart,
   type LlmMessage
 } from './backpack-lm-studio'
 import {
   buildBackpackSystemPrompt,
-  buildBackpackUserPayload,
   formatCatalogForPrompt,
-  formatProductsWithPhotosForVision,
   getCatalogReferenceImages,
-  looksLikeDeniedCatalogVisualMatch,
-  MAX_CATALOG_IMAGES_FOR_VISION,
-  replyMentionsAnyProductName,
   sanitizeLlmReplyForCustomer
 } from './backpack-llm-context'
 import { shrinkUserImageForLlm } from './backpack-llm-image'
 
 export type BackpackLlmHistoryTurn = { role: 'user' | 'assistant'; content: string }
 
-const MAX_LLM_HISTORY_MESSAGES = 5
+const DEFAULT_LLM_HISTORY_MESSAGES = 5
+const DEFAULT_VISUAL_MATCH_THRESHOLD = 90
 
 export type BackpackLlmPolicySlice = {
   rulesForBot: string
@@ -46,127 +43,194 @@ export async function runBackpackLlmTurn(input: {
     userImg = await shrinkUserImageForLlm(userImg)
   }
 
-  const historyMessages: LlmMessage[] = input.history.slice(-MAX_LLM_HISTORY_MESSAGES).map((t) => ({
+  if (userImg) {
+    return runBackpackVisualCatalogSearch({
+      userText: input.userText,
+      userImageDataUrl: userImg,
+      products: input.products
+    })
+  }
+
+  const historyMessages: LlmMessage[] = input.history.slice(-getBackpackLlmHistoryMessages()).map((t) => ({
     role: t.role,
     content: t.content
   }))
 
-  const catalogImageBatches = userImg
-    ? chunkCatalogImages(getCatalogReferenceImages(input.products))
-    : [[]]
+  const systemPrompt = buildBackpackSystemPrompt({
+    workflow: input.policy.interactionWorkflow,
+    rulesForBot: input.policy.rulesForBot,
+    customerFacts: input.policy.customerFacts,
+    catalogText
+  })
 
-  let lastReply = ''
-  let lastErr: unknown
-  for (let batchIndex = 0; batchIndex < catalogImageBatches.length; batchIndex += 1) {
-    const catalogReferenceImages = catalogImageBatches[batchIndex]
+  const messages: LlmMessage[] = [
+    { role: 'system', content: systemPrompt },
+    ...historyMessages,
+    {
+      role: 'user',
+      content: `Cliente:\n${input.userText}\n\nResponde solo con el texto para WhatsApp, sin preámbulos ni razonamiento.`
+    }
+  ]
 
-    const systemPrompt = buildBackpackSystemPrompt({
-      workflow: input.policy.interactionWorkflow,
-      rulesForBot: input.policy.rulesForBot,
-      customerFacts: input.policy.customerFacts,
-      catalogText,
-      visionComparison: userImg
-        ? {
-            attachedReferenceLabels: catalogReferenceImages.map((r) => r.label),
-            allWithPhotoSummary: formatProductsWithPhotosForVision(input.products)
-          }
-        : undefined
-    })
+  const reply = await backpackLlmChat({
+    messages,
+    temperature: input.temperature ?? 0.45,
+    maxTokens: getLlmMaxResponseTokens()
+  })
+  return sanitizeLlmReplyForCustomer(reply)
+}
 
-    const userPayload = buildBackpackUserPayload({
-      userText: input.userText,
-      userImageDataUrl: userImg,
-      catalogReferenceImages
-    })
+async function runBackpackVisualCatalogSearch(input: {
+  userText: string
+  userImageDataUrl: string
+  products: BackpackProduct[]
+}): Promise<string> {
+  const references = getCatalogReferenceImages(input.products)
+  const threshold = getVisualMatchThreshold()
+  if (references.length === 0) {
+    return 'Por ahora no tengo fotos cargadas para comparar ese modelo. Si quieres, descríbeme la mochila y reviso el catálogo.'
+  }
 
-    const messages: LlmMessage[] = [
-      { role: 'system', content: systemPrompt },
-      ...historyMessages,
-      { role: 'user', content: userPayload }
-    ]
+  let best: {
+    product: BackpackProduct
+    similarity: number
+  } | null = null
+
+  for (let index = 0; index < references.length; index += 1) {
+    const reference = references[index]
+    const product = input.products.find((p) => p.id === reference.productId)
+    if (!product) continue
 
     try {
-      let reply = await backpackLlmChat({
-        messages,
-        temperature: input.temperature ?? 0.45,
-        maxTokens: getLlmMaxResponseTokens()
+      const result = await compareUserImageWithCatalogImage({
+        userText: input.userText,
+        userImageDataUrl: input.userImageDataUrl,
+        catalogLabel: reference.label,
+        catalogImageDataUrl: reference.dataUrl
       })
-      reply = sanitizeLlmReplyForCustomer(reply)
-
-      const anyCatalogPhotos = input.products.some(
-        (p) => p.isActive && p.imageUrl?.trim()
+      console.log(
+        `[BackpackLLM] Comparación visual ${index + 1}/${references.length}: ${product.name} => ${result.similarity}%`
       )
-      const secondLook =
-        userImg &&
-        anyCatalogPhotos &&
-        looksLikeDeniedCatalogVisualMatch(reply) &&
-        !replyMentionsAnyProductName(reply, input.products)
-
-      if (secondLook) {
-        const followUp: LlmMessage[] = [
-          ...messages,
-          { role: 'assistant', content: reply },
-          {
-            role: 'user',
-            content:
-              'Segunda revisión: compara de nuevo la foto del cliente con cada imagen etiquetada "Catálogo:". Si es la misma mochila o el mismo diseño que algún producto del listado en el system prompt, responde con el *nombre exacto*, precio y stock. Solo si ninguna se parece razonablemente, mantén que no la tenemos.'
-          }
-        ]
-        try {
-          let reply2 = await backpackLlmChat({
-            messages: followUp,
-            temperature: 0.32,
-            maxTokens: getLlmMaxResponseTokens()
-          })
-          reply2 = sanitizeLlmReplyForCustomer(reply2)
-          if (reply2.length >= 12) {
-            reply = reply2
-            console.log('[BackpackLLM] Segunda pasada visual aplicada')
-          }
-        } catch {
-          /* primera respuesta */
-        }
+      if (!best || result.similarity > best.similarity) {
+        best = { product, similarity: result.similarity }
       }
-
-      if (userImg) {
-        console.log(
-          `[BackpackLLM] Revisión visual ${batchIndex + 1}/${catalogImageBatches.length} con ${catalogReferenceImages.length} imagen(es) de catálogo`
-        )
-      }
-      lastReply = reply
-      if (
-        !userImg ||
-        replyMentionsAnyProductName(reply, input.products) ||
-        catalogImageBatches.length === 1
-      ) {
-        return reply
-      }
-    } catch (e) {
-      lastErr = e
+    } catch (error) {
       console.warn(
-        `[BackpackLLM] Error en revisión visual ${batchIndex + 1}/${catalogImageBatches.length} con ${catalogReferenceImages.length} foto(s) de catálogo. Probando la siguiente tanda…`,
-        e instanceof Error ? e.message : e
+        `[BackpackLLM] Error comparando imagen con ${product.name}:`,
+        error instanceof Error ? error.message : error
       )
     }
   }
 
-  if (lastReply) {
-    return lastReply
+  if (best && best.similarity >= threshold) {
+    const availability = best.product.stock > 0 ? 'en existencia' : 'sin existencia'
+    return `Sí, tengo este modelo disponible: *${best.product.name}*.\nPrecio: $${Number(best.product.price).toFixed(2)}\nStock: ${best.product.stock} (${availability}).`
   }
 
-  throw lastErr instanceof Error
-    ? lastErr
-    : new Error(String(lastErr))
+  return 'No encontré una coincidencia suficientemente parecida en el catálogo. Si quieres, mándame otra foto o dime qué características buscas.'
 }
 
-function chunkCatalogImages<T>(items: T[]): T[][] {
-  const size = Math.max(1, MAX_CATALOG_IMAGES_FOR_VISION)
-  if (items.length === 0) return [[]]
-  const chunks: T[][] = []
-  for (let i = 0; i < items.length; i += size) {
-    chunks.push(items.slice(i, i + size))
+async function compareUserImageWithCatalogImage(input: {
+  userText: string
+  userImageDataUrl: string
+  catalogLabel: string
+  catalogImageDataUrl: string
+}): Promise<{ similarity: number }> {
+  const messages: LlmMessage[] = [
+    {
+      role: 'system',
+      content:
+        'Eres un comparador visual estricto de mochilas. Recibirás dos imágenes: primero la foto del cliente y después una foto del catálogo. ' +
+        'Debes responder SOLO JSON válido con esta forma: {"similarity": number}. ' +
+        'similarity es un porcentaje entero de 0 a 100 sobre qué tanto parecen el mismo modelo o un diseño claramente equivalente. ' +
+        'Usa 90 o más solo si son el mismo modelo o una coincidencia visual muy fuerte. No agregues texto fuera del JSON.'
+    },
+    {
+      role: 'user',
+      content: buildVisualComparisonPayload(input)
+    }
+  ]
+
+  const raw = await backpackLlmChat({
+    messages,
+    temperature: 0,
+    maxTokens: 80
+  })
+  return { similarity: parseSimilarityPercent(raw) }
+}
+
+function buildVisualComparisonPayload(input: {
+  userText: string
+  userImageDataUrl: string
+  catalogLabel: string
+  catalogImageDataUrl: string
+}): (LlmImagePart | { type: 'text'; text: string })[] {
+  const imgDetail =
+    process.env.BACKPACK_LLM_IMAGE_DETAIL === 'low'
+      ? ('low' as const)
+      : undefined
+
+  return [
+    {
+      type: 'text',
+      text:
+        `Texto del cliente: ${input.userText.trim() || '(sin texto)'}\n` +
+        'Imagen 1: foto del cliente.\n' +
+        `Imagen 2: foto del catálogo: ${input.catalogLabel}.\n` +
+        'Compara si son el mismo modelo de mochila o un diseño muy parecido. Responde solo JSON.'
+    },
+    {
+      type: 'image_url',
+      image_url: imgDetail
+        ? { url: formatImageForLlm(input.userImageDataUrl), detail: imgDetail }
+        : { url: formatImageForLlm(input.userImageDataUrl) }
+    },
+    {
+      type: 'image_url',
+      image_url: imgDetail
+        ? { url: formatImageForLlm(input.catalogImageDataUrl), detail: imgDetail }
+        : { url: formatImageForLlm(input.catalogImageDataUrl) }
+    }
+  ]
+}
+
+export function parseSimilarityPercent(raw: string): number {
+  const jsonMatch = raw.match(/\{[\s\S]*\}/)
+  const candidate = jsonMatch?.[0] ?? raw
+  try {
+    const parsed = JSON.parse(candidate) as { similarity?: unknown; score?: unknown; percent?: unknown }
+    const value = parsed.similarity ?? parsed.score ?? parsed.percent
+    const n = typeof value === 'number' ? value : Number(value)
+    return clampSimilarity(n)
+  } catch {
+    const n = Number(raw.match(/\d+(?:\.\d+)?/)?.[0])
+    return clampSimilarity(n)
   }
-  return chunks
+}
+
+function clampSimilarity(value: number): number {
+  if (!Number.isFinite(value)) return 0
+  return Math.max(0, Math.min(100, Math.round(value)))
+}
+
+function getVisualMatchThreshold(): number {
+  const n = Number(process.env.BACKPACK_LLM_VISUAL_MATCH_THRESHOLD || DEFAULT_VISUAL_MATCH_THRESHOLD)
+  if (!Number.isFinite(n)) return DEFAULT_VISUAL_MATCH_THRESHOLD
+  return Math.max(0, Math.min(100, n))
+}
+
+function getBackpackLlmHistoryMessages(): number {
+  const raw = process.env.BACKPACK_LLM_HISTORY_MESSAGES
+  const n = raw === undefined ? DEFAULT_LLM_HISTORY_MESSAGES : Number(raw)
+  if (!Number.isFinite(n)) return DEFAULT_LLM_HISTORY_MESSAGES
+  return Math.max(0, Math.min(20, Math.floor(n)))
+}
+
+function formatImageForLlm(dataUrl: string): string {
+  const mode = process.env.BACKPACK_LLM_IMAGE_URL_FORMAT?.toLowerCase().trim()
+  if (!mode || mode === 'data-url') return dataUrl
+  const comma = dataUrl.indexOf(',')
+  return comma >= 0 ? dataUrl.slice(comma + 1) : dataUrl
 }
 
 /** PNG 1×1 para pruebas (no usar en producción). */

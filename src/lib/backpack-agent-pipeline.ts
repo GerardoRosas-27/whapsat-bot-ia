@@ -12,6 +12,8 @@ import {
 } from './backpack-llm-context'
 import {
   findSimilarBackpackProducts,
+  getBackpackProductMatchLimit,
+  getBackpackTextSimilarityThreshold,
   genderLabel,
   useTypeLabel
 } from './backpack-product-similarity'
@@ -38,7 +40,7 @@ type GroundedAgentContext = {
   searchSummary: string
 }
 
-const MAX_LLM_HISTORY_MESSAGES = 5
+const DEFAULT_LLM_HISTORY_MESSAGES = 5
 const OUT_OF_SCOPE_FALLBACK =
   'Solo te puedo ayudar con información de nuestras mochilas y la tienda. ¿Qué modelo buscas?'
 const UNKNOWN_PRODUCT_FALLBACK =
@@ -585,11 +587,12 @@ function formatFallbackProductLine(product: BackpackProduct): string {
 function buildDeterministicGroundedReply(ctx: GroundedAgentContext): string {
   if (ctx.fallbackReply) return ctx.fallbackReply
   if (ctx.products.length > 0) {
+    const productLimit = getBackpackProductMatchLimit()
     const matches = findSimilarBackpackProducts(ctx.userText, ctx.products, {
-      threshold: 0.8,
-      limit: 3
+      threshold: getBackpackTextSimilarityThreshold(),
+      limit: productLimit
     }).map((match) => match.product)
-    const products = matches.length > 0 ? matches : ctx.products.slice(0, 3)
+    const products = matches.length > 0 ? matches : ctx.products.slice(0, productLimit)
     return `Sí, claro, estos son los modelos que manejamos:\n${products
       .map(formatFallbackProductLine)
       .join('\n')}`
@@ -632,7 +635,7 @@ export async function runBackpackAgentTurn(input: {
     retrievedContext: formatGroundedContext(groundedContext)
   })
 
-  const historyMessages: LlmMessage[] = input.history.slice(-MAX_LLM_HISTORY_MESSAGES).map((t) => ({
+  const historyMessages: LlmMessage[] = input.history.slice(-getBackpackLlmHistoryMessages()).map((t) => ({
     role: t.role,
     content: t.content
   }))
@@ -664,4 +667,11 @@ export async function runBackpackAgentTurn(input: {
   reply = finalCleanup(reply)
   reply = validateGroundedReply(reply, groundedContext)
   return reply
+}
+
+function getBackpackLlmHistoryMessages(): number {
+  const raw = process.env.BACKPACK_LLM_HISTORY_MESSAGES
+  const n = raw === undefined ? DEFAULT_LLM_HISTORY_MESSAGES : Number(raw)
+  if (!Number.isFinite(n)) return DEFAULT_LLM_HISTORY_MESSAGES
+  return Math.max(0, Math.min(20, Math.floor(n)))
 }

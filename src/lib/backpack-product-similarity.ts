@@ -9,8 +9,8 @@ export type ProductSimilarityMatch<T extends CatalogProduct> = {
   matchedBy: 'name' | 'description'
 }
 
-const DEFAULT_THRESHOLD = 0.8
-const DEFAULT_LIMIT = 3
+const DEFAULT_TEXT_SIMILARITY_THRESHOLD = 0.8
+const DEFAULT_PRODUCT_MATCH_LIMIT = 3
 
 const GENERIC_TERMS = new Set([
   'mochila',
@@ -42,8 +42,8 @@ export function findSimilarBackpackProducts<T extends CatalogProduct>(
   products: T[],
   options: { threshold?: number; limit?: number } = {}
 ): ProductSimilarityMatch<T>[] {
-  const threshold = options.threshold ?? DEFAULT_THRESHOLD
-  const limit = options.limit ?? DEFAULT_LIMIT
+  const threshold = options.threshold ?? getBackpackTextSimilarityThreshold()
+  const limit = options.limit ?? getBackpackProductMatchLimit()
   const normalizedText = normalizeCatalogText(llmText)
   if (!normalizedText) return []
 
@@ -51,6 +51,20 @@ export function findSimilarBackpackProducts<T extends CatalogProduct>(
   if (byName.length > 0) return byName
 
   return rankProductsBySearchText(normalizedText, products, threshold, limit)
+}
+
+export function getBackpackTextSimilarityThreshold(): number {
+  const raw = process.env.BACKPACK_TEXT_SIMILARITY_THRESHOLD
+  const n = raw === undefined ? DEFAULT_TEXT_SIMILARITY_THRESHOLD : Number(raw)
+  if (!Number.isFinite(n)) return DEFAULT_TEXT_SIMILARITY_THRESHOLD
+  return Math.max(0, Math.min(1, n > 1 ? n / 100 : n))
+}
+
+export function getBackpackProductMatchLimit(): number {
+  const raw = process.env.BACKPACK_PRODUCT_MATCH_LIMIT
+  const n = raw === undefined ? DEFAULT_PRODUCT_MATCH_LIMIT : Number(raw)
+  if (!Number.isFinite(n)) return DEFAULT_PRODUCT_MATCH_LIMIT
+  return Math.max(1, Math.min(10, Math.floor(n)))
 }
 
 export function normalizeCatalogText(value: string): string {
@@ -88,12 +102,12 @@ function rankProductsBySearchText<T extends CatalogProduct>(
   limit: number
 ): ProductSimilarityMatch<T>[] {
   return products
-    .map((product) => ({
+    .map<ProductSimilarityMatch<T>>((product) => ({
       product,
       score: attributeSimilarityForQuery(normalizedText, product),
       matchedBy: 'description' as const
     }))
-    .filter((match): match is ProductSimilarityMatch<T> => match.score >= threshold)
+    .filter((match) => match.score >= threshold)
     .sort((a, b) => b.score - a.score || a.product.name.localeCompare(b.product.name))
     .slice(0, limit)
 }
