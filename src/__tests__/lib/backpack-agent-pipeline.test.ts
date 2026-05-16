@@ -354,7 +354,7 @@ describe('runBackpackAgentTurn', () => {
       products: fakeProducts,
       history: [],
       clarificationAttempts: 3,
-      clarificationKey: 'consulta_productos:tienes mochila de ese'
+      clarificationKey: 'consulta_productos:tienes mochila de ese:tienes mochila de ese'
     })
 
     expect(result).toEqual({
@@ -778,6 +778,56 @@ describe('runBackpackAgentTurn', () => {
     expect(result.needsClarification).toBe(true)
     expect(result.exhaustedClarification).toBe(false)
     expect(result.clarificationKey).toContain('personajes')
+  })
+
+  it('para busqueda de personajes usa pregunta determinística si el LLM de aclaración no ayuda', async () => {
+    const requests: Array<{ messages?: Array<{ role: string; content: string }> }> = []
+    global.fetch = jest.fn(async (_url, init) => {
+      const parsed = JSON.parse((init?.body as string) || '{}')
+      requests.push(parsed)
+      return new Response(
+        JSON.stringify({
+          choices: [
+            {
+              message: {
+                content:
+                  requests.length === 1
+                    ? '{"flujo":"consulta_productos","descripcion":"busca mochilas de personajes"}'
+                    : 'No encontré información sobre eso.'
+              }
+            }
+          ]
+        }),
+        { status: 200, headers: { 'Content-Type': 'application/json' } }
+      )
+    }) as unknown as typeof fetch
+
+    const result = await runBackpackAgentTurnWithMeta({
+      userText: 'Hola buenas noches busco mochilas de personajes',
+      policy: {
+        flowClassifierInputFormat: '{}',
+        flowClassifierOutputFormat: '{"flujo":"consulta_productos","descripcion":"..."}',
+        customerFacts: 'Horario de atención: lunes a viernes de 8 a 5.'
+      },
+      products: [
+        {
+          ...fakeProducts[0],
+          id: 'bitono',
+          name: 'bitono',
+          description: 'mochila escolar sencilla',
+          price: 175,
+          stock: 5
+        }
+      ],
+      history: [],
+      clarificationAttempts: 3,
+      clarificationKey: 'consulta_productos:busca mochilas de personajes'
+    })
+
+    expect(global.fetch).toHaveBeenCalledTimes(4)
+    expect(result.reply).toBe('¿Qué personaje buscas en la mochila?')
+    expect(result.needsClarification).toBe(true)
+    expect(result.exhaustedClarification).toBe(false)
   })
 
   it('fuera de alcance también entra al ciclo de aclaración hasta 3 veces', async () => {

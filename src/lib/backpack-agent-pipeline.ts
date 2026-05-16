@@ -88,7 +88,7 @@ const DEFAULT_LLM_HISTORY_MESSAGES = 5
 const OUT_OF_SCOPE_FALLBACK =
   'Solo te puedo ayudar con información de nuestras mochilas y la tienda. ¿Qué modelo buscas?'
 const UNKNOWN_PRODUCT_FALLBACK =
-  'No encontré ese modelo en nuestro catálogo. Puedo buscar otro modelo o característica disponible.'
+  '¿Qué tipo de mochila buscas? Puedes darme más detalles: si es para escuela o trabajo, color, personaje, material o tamaño.'
 const UNKNOWN_BUSINESS_FACT_FALLBACK =
   'No tengo ese dato confirmado. Puedes preguntar por otro dato de la tienda o contactar directo al negocio.'
 const MALFORMED_REPLY_FALLBACK =
@@ -315,7 +315,9 @@ function normalizeText(value: string): string {
 }
 
 function buildClarificationKey(ctx: BackpackFlowGroundingContext): string {
-  return `${ctx.flow}:${normalizeText(ctx.analyzedRequest || ctx.userText).slice(0, 140)}`
+  const analyzed = normalizeText(ctx.analyzedRequest || ctx.userText).slice(0, 140)
+  const original = normalizeText(ctx.userText).slice(0, 140)
+  return `${ctx.flow}:${analyzed}:${original}`
 }
 
 const STOP_WORDS = new Set([
@@ -868,12 +870,38 @@ Formula una pregunta para obtener el detalle faltante y poder buscar mejor.`
       lastError instanceof Error ? lastError.message : lastError
     )
   }
+  const deterministicQuestion = buildDeterministicClarifyingQuestion(input.ctx)
+  if (deterministicQuestion) {
+    return {
+      reply: deterministicQuestion,
+      needsClarification: true,
+      exhaustedClarification: false,
+      clarificationKey: input.clarificationKey
+    }
+  }
   return {
     reply: FINAL_UNANSWERED_FALLBACK,
     needsClarification: false,
     exhaustedClarification: true,
     clarificationKey: input.clarificationKey
   }
+}
+
+function buildDeterministicClarifyingQuestion(ctx: GroundedAgentContext): string {
+  const t = normalizeText(ctx.userText)
+  if (ctx.scope === 'product') {
+    if (/\b(personaje|personajes|caricatura|caricaturas|anime|dibujo|dibujos)\b/.test(t)) {
+      return '¿Qué personaje buscas en la mochila?'
+    }
+    if (/\b(preescolar|kinder|nino|nina|niño|niña)\b/.test(t)) {
+      return '¿La buscas para niño o niña, y de qué personaje o color?'
+    }
+    return '¿Qué tipo de mochila buscas? Puedes darme más detalles: si es para escuela o trabajo, color, personaje, material o tamaño.'
+  }
+  if (ctx.scope === 'business') {
+    return '¿Qué dato de la tienda necesitas: ubicación, horario, envíos o forma de compra?'
+  }
+  return '¿Me das más detalles de la mochila o información de la tienda que buscas?'
 }
 
 function formatFallbackProductLine(product: BackpackProduct): string {
@@ -898,7 +926,7 @@ function buildDeterministicGroundedReply(ctx: GroundedAgentContext): string {
   if (ctx.businessFacts.trim()) {
     return limitReplyLines(ctx.businessFacts).replace(/^informaci[oó]n\s+del\s+(local|negocio)\s*[-—:]?\s*/i, '')
   }
-  return 'Te puedo ayudar con información de mochilas disponibles. ¿Qué modelo o característica buscas?'
+  return '¿Qué tipo de mochila buscas? Puedes darme más detalles: si es para escuela o trabajo, color, personaje, material o tamaño.'
 }
 
 /** Un turno del asistente IA (solo texto, sin visión). */
