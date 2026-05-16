@@ -10,6 +10,8 @@ interface BackpackProduct {
   imageUrl: string | null
   useType: string
   gender: string
+  sizes: string | string[]
+  colors: string | string[]
   price: number
   stock: number
   isActive: boolean
@@ -28,6 +30,29 @@ const GENDER_OPTIONS = [
   { value: 'unisex', label: 'Unisex' }
 ]
 
+const SIZE_OPTIONS = [
+  { value: 'chica', label: 'Chica' },
+  { value: 'mediana', label: 'Mediana' },
+  { value: 'grande', label: 'Grande' },
+  { value: 'extragrande', label: 'Extragrande' }
+]
+
+const COLOR_OPTIONS = [
+  { value: 'negro', label: 'Negro' },
+  { value: 'blanco', label: 'Blanco' },
+  { value: 'rojo', label: 'Rojo' },
+  { value: 'azul', label: 'Azul' },
+  { value: 'verde', label: 'Verde' },
+  { value: 'amarillo', label: 'Amarillo' },
+  { value: 'rosa', label: 'Rosa' },
+  { value: 'morado', label: 'Morado' },
+  { value: 'gris', label: 'Gris' },
+  { value: 'cafe', label: 'Cafe' },
+  { value: 'beige', label: 'Beige' },
+  { value: 'naranja', label: 'Naranja' },
+  { value: 'multicolor', label: 'Multicolor' }
+]
+
 export default function BackpackProductsManager() {
   const [products, setProducts] = useState<BackpackProduct[]>([])
   const [loading, setLoading] = useState(true)
@@ -40,6 +65,8 @@ export default function BackpackProductsManager() {
     imageUrl: '',
     useType: 'school' as 'school' | 'work',
     gender: 'unisex' as 'man' | 'woman' | 'unisex',
+    sizes: [] as string[],
+    colors: [] as string[],
     price: 0,
     stock: 0,
     isActive: true
@@ -91,6 +118,8 @@ export default function BackpackProductsManager() {
             imageUrl: formData.imageUrl || null,
             useType: formData.useType,
             gender: formData.gender,
+            sizes: formData.sizes,
+            colors: formData.colors,
             price: Number(formData.price),
             stock: Number(formData.stock),
             isActive: formData.isActive
@@ -101,6 +130,8 @@ export default function BackpackProductsManager() {
             imageUrl: formData.imageUrl || null,
             useType: formData.useType,
             gender: formData.gender,
+            sizes: formData.sizes,
+            colors: formData.colors,
             price: Number(formData.price),
             stock: Number(formData.stock)
           }
@@ -122,6 +153,8 @@ export default function BackpackProductsManager() {
           imageUrl: '',
           useType: 'school',
           gender: 'unisex',
+          sizes: [],
+          colors: [],
           price: 0,
           stock: 0,
           isActive: true
@@ -144,6 +177,8 @@ export default function BackpackProductsManager() {
       imageUrl: p.imageUrl ?? '',
       useType: p.useType as 'school' | 'work',
       gender: p.gender as 'man' | 'woman' | 'unisex',
+      sizes: parseSelection(p.sizes),
+      colors: parseSelection(p.colors),
       price: p.price ?? 0,
       stock: p.stock,
       isActive: p.isActive
@@ -200,6 +235,37 @@ export default function BackpackProductsManager() {
     }
   }
 
+  const parseSelection = (value: string | string[] | null | undefined): string[] => {
+    if (Array.isArray(value)) return value
+    if (!value) return []
+    try {
+      const parsed = JSON.parse(value)
+      return Array.isArray(parsed) ? parsed.map((item) => String(item)) : []
+    } catch {
+      return []
+    }
+  }
+
+  const toggleSelection = (field: 'sizes' | 'colors', value: string) => {
+    setFormData((prev) => {
+      const current = prev[field]
+      return {
+        ...prev,
+        [field]: current.includes(value)
+          ? current.filter((item) => item !== value)
+          : [...current, value]
+      }
+    })
+  }
+
+  const formatSelection = (value: string | string[] | null | undefined, options: { value: string; label: string }[]) => {
+    const selected = parseSelection(value)
+    if (selected.length === 0) return 'Sin configurar'
+    return selected
+      .map((item) => options.find((option) => option.value === item)?.label ?? item)
+      .join(', ')
+  }
+
   const cancelForm = () => {
     setShowForm(false)
     setEditingProduct(null)
@@ -209,6 +275,8 @@ export default function BackpackProductsManager() {
       imageUrl: '',
       useType: 'school',
       gender: 'unisex',
+      sizes: [],
+      colors: [],
       price: 0,
       stock: 0,
       isActive: true
@@ -333,6 +401,36 @@ export default function BackpackProductsManager() {
                 ))}
               </select>
             </label>
+            <div style={{ color: '#000' }}>
+              <div style={{ marginBottom: '6px', fontWeight: 600 }}>Tamaños disponibles</div>
+              <div style={{ display: 'flex', flexWrap: 'wrap', gap: '8px' }}>
+                {SIZE_OPTIONS.map((option) => (
+                  <label key={option.value} style={{ display: 'flex', alignItems: 'center', gap: '4px', color: '#000' }}>
+                    <input
+                      type="checkbox"
+                      checked={formData.sizes.includes(option.value)}
+                      onChange={() => toggleSelection('sizes', option.value)}
+                    />
+                    {option.label}
+                  </label>
+                ))}
+              </div>
+            </div>
+            <div style={{ color: '#000' }}>
+              <div style={{ marginBottom: '6px', fontWeight: 600 }}>Colores disponibles</div>
+              <div style={{ display: 'flex', flexWrap: 'wrap', gap: '8px' }}>
+                {COLOR_OPTIONS.map((option) => (
+                  <label key={option.value} style={{ display: 'flex', alignItems: 'center', gap: '4px', color: '#000' }}>
+                    <input
+                      type="checkbox"
+                      checked={formData.colors.includes(option.value)}
+                      onChange={() => toggleSelection('colors', option.value)}
+                    />
+                    {option.label}
+                  </label>
+                ))}
+              </div>
+            </div>
             <label style={{ color: '#000' }}>
               Precio
               <input
@@ -409,13 +507,15 @@ export default function BackpackProductsManager() {
             No hay productos. Agrega mochilas para que el bot pueda mostrarlas.
           </div>
         ) : (
-          <ResponsiveTableScroll minWidth={900}>
+          <ResponsiveTableScroll minWidth={1100}>
           <table style={{ width: '100%', borderCollapse: 'collapse', color: '#000' }}>
             <thead>
               <tr style={{ background: '#f9fafb', borderBottom: '1px solid #e5e7eb' }}>
                 <th style={{ padding: '12px', textAlign: 'left', color: '#000' }}>Nombre</th>
                 <th style={{ padding: '12px', textAlign: 'left', color: '#000' }}>Uso</th>
                 <th style={{ padding: '12px', textAlign: 'left', color: '#000' }}>Género</th>
+                <th style={{ padding: '12px', textAlign: 'left', color: '#000' }}>Tamaños</th>
+                <th style={{ padding: '12px', textAlign: 'left', color: '#000' }}>Colores</th>
                 <th style={{ padding: '12px', textAlign: 'right', color: '#000' }}>Precio</th>
                 <th style={{ padding: '12px', textAlign: 'right', color: '#000' }}>Stock</th>
                 <th style={{ padding: '12px', textAlign: 'center', color: '#000' }}>Estado</th>
@@ -428,6 +528,8 @@ export default function BackpackProductsManager() {
                   <td style={{ padding: '12px', color: '#000' }}>{p.name}</td>
                   <td style={{ padding: '12px', color: '#000' }}>{p.useType === 'school' ? 'Escuela' : 'Trabajo'}</td>
                   <td style={{ padding: '12px', color: '#000' }}>{p.gender === 'man' ? 'Hombre' : p.gender === 'woman' ? 'Mujer' : 'Unisex'}</td>
+                  <td style={{ padding: '12px', color: '#000', maxWidth: '180px' }}>{formatSelection(p.sizes, SIZE_OPTIONS)}</td>
+                  <td style={{ padding: '12px', color: '#000', maxWidth: '220px' }}>{formatSelection(p.colors, COLOR_OPTIONS)}</td>
                   <td style={{ padding: '12px', textAlign: 'right', color: '#000' }}>
                     ${Number(p.price ?? 0).toFixed(2)}
                   </td>

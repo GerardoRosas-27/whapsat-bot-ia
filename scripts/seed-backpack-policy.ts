@@ -98,6 +98,13 @@ const FLOW_CLASSIFIER_OUTPUT_FORMAT = `{
   "descripcion": "Resumen sintetizado y procesado por el LLM de lo que quiere el usuario, considerando el mensaje actual y los últimos 5 mensajes del historial. No inventes datos."
 }`
 
+const SEARCH_LLM_SYSTEM_PROMPT = `Eres el LLM de búsqueda interno del bot de mochilas. Recibes solo el contexto del flujo elegido. Devuelve únicamente JSON válido usando solo productos o datos oficiales del contexto. Si no encuentras información suficiente, indícalo en el JSON y sugiere qué detalle falta pedir.`
+const SEARCH_LLM_INPUT_FORMAT = `{"mensaje_original":"","flujo":"consulta_productos","descripcion_analisis":"","contexto_recuperado":"","historial_reciente":[]}`
+const SEARCH_LLM_OUTPUT_FORMAT = `{"encontro":false,"respuesta_borrador":"","modelos_encontrados":[],"informacion_encontrada":"","pregunta_sugerida":""}`
+const FILTER_LLM_SYSTEM_PROMPT = `Eres el filtro final del bot de WhatsApp. Recibes solo el JSON de búsqueda, el flujo y la descripcion del análisis; no recibes contexto de la base de datos. Convierte eso en el mensaje final al cliente. No uses tercera persona, razonamiento, análisis ni inventes datos. Si no hay resultados, pide más detalles sobre tipo de mochila: escuela o trabajo, color, personaje, material o tamaño.`
+const FILTER_LLM_INPUT_FORMAT = `{"mensaje_original":"","flujo":"consulta_productos","descripcion_analisis":"","resultado_busqueda_json":{}}`
+const FILTER_LLM_OUTPUT_FORMAT = 'Mensaje final para WhatsApp, sin JSON ni razonamiento.'
+
 async function main() {
   console.log('Actualizando política del bot de mochilas (singleton)...')
 
@@ -110,14 +117,26 @@ async function main() {
       interactionWorkflow: INTERACTION_WORKFLOW,
       flowClassifierSystemPrompt: FLOW_CLASSIFIER_SYSTEM_PROMPT,
       flowClassifierInputFormat: FLOW_CLASSIFIER_INPUT_FORMAT,
-      flowClassifierOutputFormat: FLOW_CLASSIFIER_OUTPUT_FORMAT
+      flowClassifierOutputFormat: FLOW_CLASSIFIER_OUTPUT_FORMAT,
+      searchLlmSystemPrompt: SEARCH_LLM_SYSTEM_PROMPT,
+      searchLlmInputFormat: SEARCH_LLM_INPUT_FORMAT,
+      searchLlmOutputFormat: SEARCH_LLM_OUTPUT_FORMAT,
+      filterLlmSystemPrompt: FILTER_LLM_SYSTEM_PROMPT,
+      filterLlmInputFormat: FILTER_LLM_INPUT_FORMAT,
+      filterLlmOutputFormat: FILTER_LLM_OUTPUT_FORMAT
     },
     update: {
       rulesForBot: RULES_FOR_BOT,
       interactionWorkflow: INTERACTION_WORKFLOW,
       flowClassifierSystemPrompt: FLOW_CLASSIFIER_SYSTEM_PROMPT,
       flowClassifierInputFormat: FLOW_CLASSIFIER_INPUT_FORMAT,
-      flowClassifierOutputFormat: FLOW_CLASSIFIER_OUTPUT_FORMAT
+      flowClassifierOutputFormat: FLOW_CLASSIFIER_OUTPUT_FORMAT,
+      searchLlmSystemPrompt: SEARCH_LLM_SYSTEM_PROMPT,
+      searchLlmInputFormat: SEARCH_LLM_INPUT_FORMAT,
+      searchLlmOutputFormat: SEARCH_LLM_OUTPUT_FORMAT,
+      filterLlmSystemPrompt: FILTER_LLM_SYSTEM_PROMPT,
+      filterLlmInputFormat: FILTER_LLM_INPUT_FORMAT,
+      filterLlmOutputFormat: FILTER_LLM_OUTPUT_FORMAT
     }
   })
 

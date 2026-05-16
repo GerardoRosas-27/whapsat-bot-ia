@@ -178,6 +178,8 @@ model BackpackProduct {
   imageUrl    String?  // URL de la imagen (opcional)
   useType     String   // "school" | "work"
   gender      String   // "man" | "woman" | "unisex"
+  sizes       String   @default("[]") // JSON string: chica, mediana, grande, extragrande
+  colors      String   @default("[]") // JSON string: colores disponibles del modelo
   price       Float    @default(0) // Precio del producto
   stock       Int      @default(0) // Cantidad en existencia
   isActive    Boolean  @default(true)
@@ -194,6 +196,12 @@ model BackpackBotPolicy {
   flowClassifierSystemPrompt String   @default("") // Reglas del system prompt para el clasificador interno
   flowClassifierInputFormat  String   @default("") // JSON de referencia que recibe el clasificador interno
   flowClassifierOutputFormat String   @default("") // JSON con flujo + descripcion procesada que debe regresar el clasificador interno
+  searchLlmSystemPrompt      String   @default("") // Reglas del LLM de búsqueda interno
+  searchLlmInputFormat       String   @default("") // JSON de entrada del LLM de búsqueda
+  searchLlmOutputFormat      String   @default("") // JSON de salida del LLM de búsqueda
+  filterLlmSystemPrompt      String   @default("") // Reglas del LLM filtro final
+  filterLlmInputFormat       String   @default("") // Entrada del LLM filtro final
+  filterLlmOutputFormat      String   @default("") // Salida final para WhatsApp
   googleMapsUrl              String?  // Enlace de Google Maps para ubicación del negocio
   sketchImageUrl             String?  // URL de croquis o imagen de referencia para llegar
   createdAt                  DateTime @default(now())

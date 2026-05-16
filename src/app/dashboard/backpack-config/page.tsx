@@ -7,12 +7,11 @@ import {
   BackpackBotPolicyManager,
   BackpackCompanyDataManager,
   BackpackConversationsManager,
-  BackpackFlowJsonManager,
   BackpackProductsManager,
   BotStatusBackpack
 } from '@/modules/backpack/ui'
 
-type BackpackTab = 'status' | 'rules' | 'flow-json' | 'company' | 'products' | 'conversations' | 'admins'
+type BackpackTab = 'status' | 'rules' | 'company' | 'products' | 'conversations' | 'admins'
 
 export default function BackpackConfigPage() {
   const router = useRouter()
@@ -139,7 +138,6 @@ export default function BackpackConfigPage() {
             [
               { id: 'status' as const, label: 'Estado del bot' },
               { id: 'rules' as const, label: 'Instrucciones IA' },
-              { id: 'flow-json' as const, label: 'Flujos JSON' },
               { id: 'company' as const, label: 'Datos de empresa' },
               { id: 'products' as const, label: 'Productos' },
               { id: 'conversations' as const, label: 'Conversaciones' },
@@ -169,7 +167,6 @@ export default function BackpackConfigPage() {
 
         {activeTab === 'status' && <BotStatusBackpack />}
         {activeTab === 'rules' && <BackpackBotPolicyManager />}
-        {activeTab === 'flow-json' && <BackpackFlowJsonManager />}
         {activeTab === 'company' && <BackpackCompanyDataManager />}
         {activeTab === 'products' && <BackpackProductsManager />}
         {activeTab === 'conversations' && <BackpackConversationsManager />}

@@ -62,6 +62,7 @@ export async function backpackLlmChat(params: {
   messages: LlmMessage[]
   temperature?: number
   maxTokens?: number | null
+  enableReasoning?: boolean
 }): Promise<string> {
   const base = getLlmBaseUrl()
   const model = getLlmModel()
@@ -82,7 +83,12 @@ export async function backpackLlmChat(params: {
     body.max_tokens = params.maxTokens
   }
 
-  if (shouldDisableReasoning()) {
+  if (params.enableReasoning) {
+    body.reasoning_effort = 'high'
+    body.reasoning = { effort: 'high' }
+    body.include_reasoning = false
+    body.return_reasoning = false
+  } else if (shouldDisableReasoning()) {
     body.reasoning_effort = 'none'
     body.reasoning = { effort: 'none' }
     body.include_reasoning = false

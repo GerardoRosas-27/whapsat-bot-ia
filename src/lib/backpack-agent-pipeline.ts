@@ -37,6 +37,12 @@ export type BackpackAgentPolicySlice = {
   flowClassifierSystemPrompt?: string | null
   flowClassifierInputFormat?: string | null
   flowClassifierOutputFormat?: string | null
+  searchLlmSystemPrompt?: string | null
+  searchLlmInputFormat?: string | null
+  searchLlmOutputFormat?: string | null
+  filterLlmSystemPrompt?: string | null
+  filterLlmInputFormat?: string | null
+  filterLlmOutputFormat?: string | null
 }
 
 export type BackpackAgentTurnInput = {
@@ -96,6 +102,58 @@ const MALFORMED_REPLY_FALLBACK =
 const FINAL_UNANSWERED_FALLBACK =
   'Por el momento no podemos atenderle.'
 const MAX_CLARIFICATION_ATTEMPTS = 3
+
+const DEFAULT_SEARCH_LLM_SYSTEM_PROMPT = `Eres el LLM de búsqueda interno del bot de mochilas.
+Recibes solo el contexto del flujo elegido: catálogo filtrado o datos oficiales relevantes.
+Tu salida NO se envía al cliente.
+Responde únicamente JSON válido.
+Usa solo productos, precios, stock e información que aparezcan en el contexto.
+Si no encuentras productos o información suficiente, indícalo en el JSON y sugiere qué dato falta pedir.`
+
+const DEFAULT_SEARCH_LLM_INPUT_FORMAT = `{
+  "mensaje_original": "texto del cliente",
+  "flujo": "consulta_productos",
+  "descripcion_analisis": "busca mochilas de personajes",
+  "contexto_recuperado": "catálogo o datos oficiales del flujo",
+  "historial_reciente": []
+}`
+
+const DEFAULT_SEARCH_LLM_OUTPUT_FORMAT = `{
+  "encontro": false,
+  "respuesta_borrador": "borrador interno con lo encontrado o con la duda que falta resolver",
+  "modelos_encontrados": ["nombre exacto del modelo si aplica"],
+  "informacion_encontrada": "datos oficiales encontrados si aplica",
+  "pregunta_sugerida": "pregunta breve si falta detalle"
+}`
+
+const DEFAULT_FILTER_LLM_SYSTEM_PROMPT = `Eres el filtro final del bot de WhatsApp de una tienda de mochilas.
+Recibes solo la salida JSON del LLM de búsqueda, el flujo y la descripcion del análisis. No recibes contexto de la base de datos.
+Tu salida SÍ se enviará al cliente.
+Reglas estrictas:
+- Contesta solo el mensaje final para WhatsApp.
+- No escribas razonamiento, análisis, tercera persona, "el usuario", "el cliente", "debo", "objetivo", "idioma" ni "límite".
+- No inventes modelos, precios, stock, horarios, ubicación ni políticas. Usa únicamente lo que venga en el JSON de búsqueda.
+- Si el JSON de búsqueda no encontró productos o faltan datos, pide más detalles con esta idea: "¿Qué tipo de mochila buscas? Puedes darme más detalles: si es para escuela o trabajo, color, personaje, material o tamaño."
+- Si hay modelos encontrados, menciona solo esos nombres exactos.
+- Máximo 6 líneas, español de México, tono natural.`
+
+const DEFAULT_FILTER_LLM_INPUT_FORMAT = `{
+  "mensaje_original": "texto del cliente",
+  "flujo": "consulta_productos",
+  "descripcion_analisis": "busca mochilas de personajes",
+  "resultado_busqueda_json": {}
+}`
+
+const DEFAULT_FILTER_LLM_OUTPUT_FORMAT =
+  'Mensaje final para WhatsApp, sin JSON, sin razonamiento y sin tercera persona.'
+
+const UNIFIED_REASONING_ENV = 'BACKPACK_LLM_UNIFIED_REASONING'
+
+type FastAnalysisResult = {
+  flujo: BackpackFlowName
+  descripcion: string
+  respuestaDirecta: string
+}
 
 const DEFAULT_AGENT_CONTEXT = `# Rol
 
@@ -198,6 +256,321 @@ ${truncateForPrompt(facts, 4000)}
 
 Contexto recuperado para esta pregunta:
 ${compactContext}`
+}
+
+function buildBackpackSearchSystemPrompt(parts: {
+  basePrompt: string
+  systemPrompt?: string | null
+  inputFormat?: string | null
+  outputFormat?: string | null
+}): string {
+  return `${parts.systemPrompt?.trim() || DEFAULT_SEARCH_LLM_SYSTEM_PROMPT}
+
+Formato de entrada esperado:
+${parts.inputFormat?.trim() || DEFAULT_SEARCH_LLM_INPUT_FORMAT}
+
+Formato obligatorio de salida:
+${parts.outputFormat?.trim() || DEFAULT_SEARCH_LLM_OUTPUT_FORMAT}
+
+Instrucciones y contexto disponibles para búsqueda:
+${parts.basePrompt}
+
+Devuelve únicamente JSON válido.`
+}
+
+function buildBackpackFilterSystemPrompt(parts: {
+  systemPrompt?: string | null
+  inputFormat?: string | null
+  outputFormat?: string | null
+}): string {
+  return `${parts.systemPrompt?.trim() || DEFAULT_FILTER_LLM_SYSTEM_PROMPT}
+
+Formato de entrada esperado:
+${parts.inputFormat?.trim() || DEFAULT_FILTER_LLM_INPUT_FORMAT}
+
+Formato obligatorio de salida:
+${parts.outputFormat?.trim() || DEFAULT_FILTER_LLM_OUTPUT_FORMAT}`
+}
+
+function isUnifiedReasoningModeEnabled(): boolean {
+  const v = process.env[UNIFIED_REASONING_ENV]?.toLowerCase().trim()
+  return v === 'true' || v === '1' || v === 'yes' || v === 'on'
+}
+
+function buildUnifiedReasoningSystemPrompt(parts: {
+  contextFile: string
+  policy: BackpackAgentPolicySlice
+  catalogText: string
+}): string {
+  return `Modo unificado de razonamiento para el bot de mochilas.
+En este modo haces en UNA sola llamada el trabajo que normalmente hacen 3 LLMs separados:
+1. Analizar la intención y flujo del cliente.
+2. Buscar usando catálogo y datos de empresa.
+3. Filtrar la respuesta final para WhatsApp.
+
+Puedes razonar internamente, pero tu salida debe ser ÚNICAMENTE el mensaje final para el cliente.
+No escribas pensamientos, análisis, pasos, JSON, tercera persona, "el usuario", "el cliente", "debo", "objetivo", "idioma" ni "límite".
+Usa solo la base de datos incluida en este prompt. No inventes productos, precios, stock, horarios, ubicación ni políticas.
+Si no encuentras suficiente información, pide detalles de forma clara y corta:
+"¿Qué tipo de mochila buscas? Puedes darme más detalles: si es para escuela o trabajo, color, personaje, material o tamaño."
+
+Flujo operativo:
+- Primero identifica si pregunta por productos, ubicación, horarios, políticas o algo fuera de alcance.
+- Para productos, busca coincidencias en el catálogo por nombre, descripción, uso, género, personaje, material o características.
+- Para ubicación, horarios y políticas, usa solo Datos de empresa.
+- Al final responde como tienda por WhatsApp, máximo 6 líneas, directo y natural.
+- Si mencionas modelos, usa nombres exactos del catálogo.
+
+Configuración de LLMs separados (unificada aquí solo como guía):
+
+LLM de análisis - system prompt:
+${parts.policy.flowClassifierSystemPrompt?.trim() || '(Usa el análisis interno por defecto.)'}
+
+LLM de análisis - formato salida:
+${parts.policy.flowClassifierOutputFormat?.trim() || '(JSON con flujo y descripcion.)'}
+
+LLM de búsqueda - system prompt:
+${parts.policy.searchLlmSystemPrompt?.trim() || DEFAULT_SEARCH_LLM_SYSTEM_PROMPT}
+
+LLM de búsqueda - formato salida:
+${parts.policy.searchLlmOutputFormat?.trim() || DEFAULT_SEARCH_LLM_OUTPUT_FORMAT}
+
+LLM de filtro final - system prompt:
+${parts.policy.filterLlmSystemPrompt?.trim() || DEFAULT_FILTER_LLM_SYSTEM_PROMPT}
+
+Contexto base del agente:
+${truncateForPrompt(parts.contextFile, 3000)}
+
+Reglas internas configuradas:
+${truncateForPrompt(parts.policy.rulesForBot || '', 2500) || '(Sin reglas adicionales.)'}
+
+Flujo de trabajo configurado:
+${truncateForPrompt(parts.policy.interactionWorkflow || '', 2500) || '(Sin flujo adicional.)'}
+
+Datos de empresa:
+${truncateForPrompt(parts.policy.customerFacts, 5000) || '(Sin datos oficiales cargados.)'}
+
+Catálogo completo de productos:
+${truncateForPrompt(parts.catalogText, 12000)}`
+}
+
+function extractSearchResultText(searchRaw: string): string {
+  try {
+    const parsed = JSON.parse(stripJsonBlock(searchRaw)) as {
+      respuesta_borrador?: unknown
+      informacion_encontrada?: unknown
+      pregunta_sugerida?: unknown
+    }
+    return [
+      parsed.respuesta_borrador,
+      parsed.informacion_encontrada,
+      parsed.pregunta_sugerida
+    ]
+      .filter((value): value is string => typeof value === 'string' && value.trim().length > 0)
+      .join('\n')
+      .trim()
+  } catch {
+    return searchRaw
+  }
+}
+
+function stripJsonBlock(text: string): string {
+  const trimmed = text.trim()
+  const fenced = trimmed.match(/^```(?:json)?\s*([\s\S]*?)\s*```$/i)
+  if (fenced?.[1]) return fenced[1].trim()
+  const start = trimmed.indexOf('{')
+  const end = trimmed.lastIndexOf('}')
+  if (start >= 0 && end > start) return trimmed.slice(start, end + 1)
+  return trimmed
+}
+
+function normalizeFastFlow(value: unknown): BackpackFlowName {
+  if (typeof value !== 'string') return 'fuera_de_alcance'
+  const normalized = normalizeText(value).replace(/\s+/g, '_')
+  if (
+    normalized === 'consulta_ubicacion' ||
+    normalized === 'consulta_horarios' ||
+    normalized === 'consulta_politicas' ||
+    normalized === 'consulta_productos' ||
+    normalized === 'fuera_de_alcance'
+  ) {
+    return normalized
+  }
+  return 'fuera_de_alcance'
+}
+
+function parseFastAnalysisReply(text: string, userText: string): FastAnalysisResult | null {
+  try {
+    const parsed = JSON.parse(stripJsonBlock(text)) as {
+      flujo?: unknown
+      descripcion?: unknown
+      respuesta_directa?: unknown
+      respuestaDirecta?: unknown
+    }
+    return {
+      flujo: normalizeFastFlow(parsed.flujo),
+      descripcion:
+        typeof parsed.descripcion === 'string' && parsed.descripcion.trim()
+          ? parsed.descripcion.trim()
+          : userText,
+      respuestaDirecta:
+        typeof parsed.respuesta_directa === 'string'
+          ? parsed.respuesta_directa.trim()
+          : typeof parsed.respuestaDirecta === 'string'
+            ? parsed.respuestaDirecta.trim()
+            : ''
+    }
+  } catch {
+    return null
+  }
+}
+
+function buildFastAnalysisSystemPrompt(input: {
+  policy: BackpackAgentPolicySlice
+}): string {
+  return `${input.policy.flowClassifierSystemPrompt?.trim() || 'Analiza el mensaje del cliente para una tienda de mochilas.'}
+
+Esta es la primera llamada rápida SIN pensamiento. Recibes datos de empresa, pero NO recibes catálogo.
+También recibes los últimos 5 mensajes del historial para resolver referencias y entender si el cliente está pidiendo productos.
+Objetivo:
+1. Decide el flujo.
+2. Si el flujo es consulta_ubicacion, consulta_horarios o consulta_politicas, responde directo usando SOLO Datos de empresa.
+3. Si el flujo es consulta_productos, NO respondas al cliente; solo devuelve flujo y descripcion.
+4. Si es fuera_de_alcance o no entiendes, responde con: "${UNKNOWN_PRODUCT_FALLBACK}"
+5. Si no hay datos suficientes de empresa para un flujo de negocio, pide el dato faltante de forma breve.
+
+Formato obligatorio de salida JSON:
+{
+  "flujo": "consulta_productos",
+  "descripcion": "descripcion sintetizada conservando palabras clave",
+  "respuesta_directa": "solo para ubicación/horarios/políticas/fuera_de_alcance; vacío para consulta_productos"
+}
+
+Reglas:
+- No escribas pensamiento ni explicación fuera del JSON.
+- No inventes datos.
+- Corrige typos comunes: "tines" = "tienes".
+- Si el cliente menciona mochilas, modelos, personajes, caricaturas, anime, preescolar, escuela, trabajo, marcas deportivas, colores, material o tamaño, el flujo debe ser consulta_productos aunque no tengas catálogo en esta llamada.
+- Ejemplos de consulta_productos: "Tienes mochilas de personajes?", "busco una de sonic", "hay reforzadas", "tienes para trabajo", "mochila negra escolar".
+- Conserva palabras clave en descripcion para que el segundo LLM busque en catálogo.
+
+Datos de empresa:
+${input.policy.customerFacts.trim() || '(Sin datos de empresa configurados.)'}`
+}
+
+async function runFastAnalysisTurn(input: {
+  userText: string
+  history: BackpackAgentHistoryTurn[]
+  policy: BackpackAgentPolicySlice
+}): Promise<FastAnalysisResult> {
+  const hasAnalysisConfig = Boolean(
+    input.policy.flowClassifierSystemPrompt?.trim() ||
+      input.policy.flowClassifierInputFormat?.trim() ||
+      input.policy.flowClassifierOutputFormat?.trim()
+  )
+  if (!hasAnalysisConfig) {
+    const scope = inferScope(input.userText)
+    if (scope === 'business' || scope === 'mixed') {
+      const facts = selectRelevantBusinessFacts(input.userText, input.policy.customerFacts)
+      return {
+        flujo: isScheduleQuestion(normalizeText(input.userText))
+          ? 'consulta_horarios'
+          : isDeliveryQuestion(normalizeText(input.userText))
+            ? 'consulta_politicas'
+            : 'consulta_ubicacion',
+        descripcion: input.userText,
+        respuestaDirecta: facts ? limitReplyLines(facts) : UNKNOWN_BUSINESS_FACT_FALLBACK
+      }
+    }
+    if (scope === 'product' || scope === 'unknown') {
+      return {
+        flujo: 'consulta_productos',
+        descripcion: input.userText,
+        respuestaDirecta: ''
+      }
+    }
+    return {
+      flujo: 'fuera_de_alcance',
+      descripcion: input.userText,
+      respuestaDirecta: UNKNOWN_PRODUCT_FALLBACK
+    }
+  }
+  const historyMessages: LlmMessage[] = input.history.slice(-5).map((turn) => ({
+    role: turn.role,
+    content: turn.content
+  }))
+  const messages: LlmMessage[] = [
+    { role: 'system', content: buildFastAnalysisSystemPrompt({ policy: input.policy }) },
+    ...historyMessages,
+    {
+      role: 'user',
+      content: JSON.stringify(
+        {
+          mensaje_actual: input.userText,
+          historial_ultimos_5_mensajes: historyMessages
+        },
+        null,
+        2
+      )
+    }
+  ]
+
+  try {
+    const raw = await backpackLlmChat({
+      messages,
+      temperature: 0,
+      maxTokens: 320,
+      enableReasoning: false
+    })
+    const parsed = parseFastAnalysisReply(raw, input.userText)
+    if (parsed) return parsed
+  } catch (error) {
+    console.warn(
+      '[BackpackAgent] Análisis rápido no disponible:',
+      error instanceof Error ? error.message : error
+    )
+  }
+
+  return {
+    flujo: 'fuera_de_alcance',
+    descripcion: input.userText,
+    respuestaDirecta: UNKNOWN_PRODUCT_FALLBACK
+  }
+}
+
+function buildProductReasoningSystemPrompt(input: {
+  contextFile: string
+  policy: BackpackAgentPolicySlice
+  flowContext: BackpackFlowGroundingContext
+  catalogText: string
+}): string {
+  return `Eres el LLM de productos del bot de WhatsApp de una tienda de mochilas.
+Esta llamada SÍ puede usar modo pensamiento, pero tu salida debe ser SOLO el mensaje final para el cliente.
+Recibes únicamente contexto de catálogo recuperado para consulta_productos.
+
+Trabajo interno:
+1. Busca productos usando la descripcion del análisis y el catálogo.
+2. Aplica las reglas del filtro final: respuesta clara, corta, directa, sin tercera persona ni razonamientos.
+3. Si encuentras modelos, menciona solo nombres exactos del catálogo y datos respaldados.
+4. Si no encuentras coincidencias reales o falta detalle, pregunta:
+"${UNKNOWN_PRODUCT_FALLBACK}"
+
+Prohibido escribir: "el usuario", "el cliente", "debo", "objetivo", "idioma", "límite", JSON, análisis o pensamiento.
+
+System prompt de búsqueda configurado:
+${input.policy.searchLlmSystemPrompt?.trim() || DEFAULT_SEARCH_LLM_SYSTEM_PROMPT}
+
+System prompt de filtro final configurado:
+${input.policy.filterLlmSystemPrompt?.trim() || DEFAULT_FILTER_LLM_SYSTEM_PROMPT}
+
+Contexto base:
+${truncateForPrompt(input.contextFile, 2500)}
+
+Catálogo recuperado:
+${input.catalogText}
+
+Contexto del flujo:
+${formatBackpackFlowGroundingContext(input.flowContext)}`
 }
 
 /** Quita cualquier residuo de razonamiento que haya esquivado el sanitizador base. */
@@ -731,13 +1104,13 @@ function looksLikeCodeOrInternalOutput(reply: string): boolean {
 
 function looksLikeMetaNarration(reply: string): boolean {
   return (
-    /\b(el usuario|la usuaria|el cliente|la clienta)\s+(quiere|pregunta|solicita|busca|est[aá] pidiendo|desea saber|necesita saber|inicia|env[ií]o|se quej[oó])/i.test(
+    /\b(el usuario|la usuaria|el cliente|la clienta)\s+(quiere|pregunta|pregunt[oó]|solicita|solicit[oó]|pide|pidi[oó]|busca|busc[oó]|est[aá] pidiendo|desea saber|necesita saber|inicia|env[ií]o|se quej[oó])/i.test(
       reply
     ) ||
     /\b(el usuario|la usuaria|el cliente|la clienta)\s+est[aá]\s+(preguntando|solicitando|buscando|pidiendo)/i.test(
       reply
     ) ||
-    /\b(como vendedor|como asistente|debo responder|debo ser|mi objetivo|plan:|razonamiento|información disponible:|cordial,\s*direct[ao]|siguiendo la regla|revisando el cat[aá]logo|respuesta a generar|cat[aá]logo disponible|confirmar disponibilidad|ofrecer informaci[oó]n|informar sobre|informar al cliente|informar que)/i.test(
+    /\b(como vendedor|como asistente|debo responder|debo ser|debo pedir|objetivo:|idioma:|l[ií]mite:|mi objetivo|plan:|razonamiento|información disponible:|la base de datos|cordial,\s*direct[ao]|siguiendo la regla|revisando el cat[aá]logo|respuesta a generar|cat[aá]logo disponible|confirmar disponibilidad|ofrecer informaci[oó]n|informar sobre|informar al cliente|informar que)/i.test(
       reply
     )
   )
@@ -819,7 +1192,10 @@ async function buildClarifyingQuestion(input: {
     {
       role: 'system',
       content: `Generas UNA pregunta breve para WhatsApp cuando no hay información suficiente en la base de datos.
-Usa el contexto de conversación y los datos recuperados para pedir el detalle más útil.
+Usa el contexto de conversación y los datos recuperados para pedir el detalle más útil sobre mochilas.
+Habla directo al cliente, nunca en tercera persona. No escribas "el usuario", "el cliente", "debo", "objetivo", "idioma", "límite", análisis ni explicación.
+No repitas errores de escritura del cliente; interpreta "tines" como "tienes".
+Si falta detalle de producto, pregunta de forma clara qué tipo de mochila busca: escuela o trabajo, color, personaje, material o tamaño.
 No inventes productos, precios, horarios ni políticas.
 No listes modelos por default.
 No expliques que falta información en la base.
@@ -850,7 +1226,8 @@ Formula una pregunta para obtener el detalle faltante y poder buscar mejor.`
         question.trim() &&
         !looksLikeUnansweredReply(question) &&
         !looksLikeCodeOrInternalOutput(question) &&
-        !looksLikeMetaNarration(question)
+        !looksLikeMetaNarration(question) &&
+        !/\btines\b/i.test(question)
       ) {
         return {
           reply: question,
@@ -890,9 +1267,6 @@ Formula una pregunta para obtener el detalle faltante y poder buscar mejor.`
 function buildDeterministicClarifyingQuestion(ctx: GroundedAgentContext): string {
   const t = normalizeText(ctx.userText)
   if (ctx.scope === 'product') {
-    if (/\b(personaje|personajes|caricatura|caricaturas|anime|dibujo|dibujos)\b/.test(t)) {
-      return '¿Qué personaje buscas en la mochila?'
-    }
     if (/\b(preescolar|kinder|nino|nina|niño|niña)\b/.test(t)) {
       return '¿La buscas para niño o niña, y de qué personaje o color?'
     }
@@ -929,6 +1303,77 @@ function buildDeterministicGroundedReply(ctx: GroundedAgentContext): string {
   return '¿Qué tipo de mochila buscas? Puedes darme más detalles: si es para escuela o trabajo, color, personaje, material o tamaño.'
 }
 
+async function runUnifiedReasoningAgentTurn(
+  input: BackpackAgentTurnInput,
+  contextFile: string,
+  userText: string
+): Promise<BackpackAgentTurnResult> {
+  const catalogText = formatCatalogForPrompt(input.products)
+  const historyMessages: LlmMessage[] = input.history.slice(-getBackpackLlmHistoryMessages()).map((t) => ({
+    role: t.role,
+    content: t.content
+  }))
+  const messages: LlmMessage[] = [
+    {
+      role: 'system',
+      content: buildUnifiedReasoningSystemPrompt({
+        contextFile,
+        policy: input.policy,
+        catalogText
+      })
+    },
+    ...historyMessages,
+    {
+      role: 'user',
+      content: `Cliente: ${userText}\nResponde solo con el mensaje final para WhatsApp.`
+    }
+  ]
+
+  let reply: string
+  try {
+    reply = await backpackLlmChat({
+      messages,
+      temperature: input.temperature ?? 0.25,
+      maxTokens: getLlmMaxResponseTokens(),
+      enableReasoning: true
+    })
+  } catch (error) {
+    console.warn(
+      '[BackpackAgent] Modo unificado no devolvió respuesta útil:',
+      error instanceof Error ? error.message : error
+    )
+    return {
+      reply: '¿Qué tipo de mochila buscas? Puedes darme más detalles: si es para escuela o trabajo, color, personaje, material o tamaño.',
+      needsClarification: true,
+      exhaustedClarification: false,
+      clarificationKey: `unified:${normalizeText(userText).slice(0, 140)}`
+    }
+  }
+
+  reply = sanitizeLlmReplyForCustomer(reply)
+  reply = finalCleanup(reply)
+  if (
+    looksLikeMetaNarration(reply) ||
+    looksLikeCodeOrInternalOutput(reply) ||
+    looksLikeUnansweredReply(reply)
+  ) {
+    reply = '¿Qué tipo de mochila buscas? Puedes darme más detalles: si es para escuela o trabajo, color, personaje, material o tamaño.'
+    return {
+      reply,
+      needsClarification: true,
+      exhaustedClarification: false,
+      clarificationKey: `unified:${normalizeText(userText).slice(0, 140)}`
+    }
+  }
+
+  return {
+    reply,
+    needsClarification: false,
+    exhaustedClarification: false,
+    clarificationKey: `unified:${normalizeText(userText).slice(0, 140)}`
+  }
+}
+
 /** Un turno del asistente IA (solo texto, sin visión). */
 export async function runBackpackAgentTurn(input: BackpackAgentTurnInput): Promise<string> {
   const result = await runBackpackAgentTurnWithMeta(input)
@@ -942,15 +1387,42 @@ export async function runBackpackAgentTurnWithMeta(
   const userText =
     input.userText.trim() ||
     '(El cliente envió un mensaje vacío. Pide amablemente que escriba su pregunta sobre mochilas.)'
-  const flowAnalysis = await analyzeBackpackFlow({
+  const fastAnalysis = await runFastAnalysisTurn({
     userText,
     history: input.history,
-    config: {
-      systemPrompt: input.policy.flowClassifierSystemPrompt,
-      inputFormat: input.policy.flowClassifierInputFormat,
-      outputFormat: input.policy.flowClassifierOutputFormat
-    }
+    policy: input.policy
   })
+  if (fastAnalysis.flujo !== 'consulta_productos') {
+    const clarificationKey = `${fastAnalysis.flujo}:${normalizeText(fastAnalysis.descripcion).slice(0, 140)}:${normalizeText(userText).slice(0, 140)}`
+    const attempts =
+      input.clarificationKey === clarificationKey
+        ? Math.max(0, Math.floor(input.clarificationAttempts ?? 0))
+        : 0
+    if (attempts >= MAX_CLARIFICATION_ATTEMPTS) {
+      return {
+        reply: FINAL_UNANSWERED_FALLBACK,
+        needsClarification: false,
+        exhaustedClarification: true,
+        clarificationKey
+      }
+    }
+    let reply = fastAnalysis.respuestaDirecta || UNKNOWN_PRODUCT_FALLBACK
+    reply = finalCleanup(sanitizeLlmReplyForCustomer(reply))
+    if (!reply || looksLikeMetaNarration(reply) || looksLikeCodeOrInternalOutput(reply)) {
+      reply = UNKNOWN_PRODUCT_FALLBACK
+    }
+    return {
+      reply,
+      needsClarification: fastAnalysis.flujo === 'fuera_de_alcance' || reply === UNKNOWN_PRODUCT_FALLBACK,
+      exhaustedClarification: false,
+      clarificationKey
+    }
+  }
+  const flowAnalysis = {
+    flujo: fastAnalysis.flujo,
+    descripcion: fastAnalysis.descripcion,
+    source: 'llm' as const
+  }
   const flowContext = buildBackpackFlowGroundingContext({
     analysis: flowAnalysis,
     userText,
@@ -991,13 +1463,11 @@ export async function runBackpackAgentTurnWithMeta(
     })
   }
 
-  const systemPrompt = buildBackpackAgentSystemPrompt({
+  const systemPrompt = buildProductReasoningSystemPrompt({
     contextFile,
-    customerFacts: flowContext.businessFacts,
-    rulesForBot: input.policy.rulesForBot,
-    interactionWorkflow: input.policy.interactionWorkflow,
-    catalogText,
-    retrievedContext: formatBackpackFlowGroundingContext(flowContext)
+    policy: input.policy,
+    flowContext,
+    catalogText
   })
 
   const historyMessages: LlmMessage[] = input.history.slice(-getBackpackLlmHistoryMessages()).map((t) => ({
@@ -1010,10 +1480,17 @@ export async function runBackpackAgentTurnWithMeta(
     ...historyMessages,
     {
       role: 'user',
-      content: `Mensaje original del cliente: ${userText}
-Descripcion procesada por el analizador interno: ${flowContext.analyzedRequest}
-Flujo activado: ${flowContext.flow}
-Escribe únicamente la respuesta final para el cliente. No expliques qué entendiste ni cómo vas a responder.`
+      content: JSON.stringify(
+        {
+          mensaje_original: userText,
+          flujo: flowContext.flow,
+          descripcion_analisis: flowContext.analyzedRequest,
+          contexto_catalogo: formatBackpackFlowGroundingContext(flowContext),
+          historial_reciente: historyMessages
+        },
+        null,
+        2
+      )
     }
   ]
 
@@ -1022,7 +1499,8 @@ Escribe únicamente la respuesta final para el cliente. No expliques qué entend
     reply = await backpackLlmChat({
       messages,
       temperature: input.temperature ?? 0.2,
-      maxTokens: getLlmMaxResponseTokens()
+      maxTokens: getLlmMaxResponseTokens(),
+      enableReasoning: true
     })
   } catch (error) {
     console.warn(

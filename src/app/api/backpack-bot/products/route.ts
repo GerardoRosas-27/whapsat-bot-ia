@@ -9,6 +9,31 @@ function requireAdmin(user: ReturnType<typeof verifyToken>) {
   return true
 }
 
+const VALID_SIZES = ['chica', 'mediana', 'grande', 'extragrande']
+const VALID_COLORS = [
+  'negro',
+  'blanco',
+  'rojo',
+  'azul',
+  'verde',
+  'amarillo',
+  'rosa',
+  'morado',
+  'gris',
+  'cafe',
+  'beige',
+  'naranja',
+  'multicolor'
+]
+
+function normalizeSelection(value: unknown, allowed: string[]): string {
+  if (!Array.isArray(value)) return '[]'
+  const selected = value
+    .map((item) => String(item).trim().toLowerCase())
+    .filter((item, index, arr) => allowed.includes(item) && arr.indexOf(item) === index)
+  return JSON.stringify(selected)
+}
+
 export async function GET(request: NextRequest) {
   try {
     const user = verifyToken(request)
@@ -53,7 +78,7 @@ export async function POST(request: NextRequest) {
     }
 
     const body = await request.json()
-    const { name, description, imageUrl, useType, gender, stock, price } = body
+    const { name, description, imageUrl, useType, gender, stock, price, sizes, colors } = body
 
     if (!name || !description || !useType || !gender) {
       return NextResponse.json(
@@ -78,6 +103,8 @@ export async function POST(request: NextRequest) {
         imageUrl: imageUrl ? String(imageUrl).trim() : null,
         useType,
         gender,
+        sizes: normalizeSelection(sizes, VALID_SIZES),
+        colors: normalizeSelection(colors, VALID_COLORS),
         stock: typeof stock === 'number' ? Math.max(0, stock) : 0,
         price: typeof price === 'number' && price >= 0 ? price : 0
       }

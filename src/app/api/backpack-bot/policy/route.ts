@@ -42,6 +42,12 @@ Reglas:
 5. Si el cliente pregunta algo ambiguo pero parece relacionado con mochilas, usa consulta_productos y pide que la descripcion conserve la duda principal para que el siguiente LLM pueda pedir detalles.
 6. Si no puedes determinar que el cliente pide ubicación, horarios, políticas o productos de mochilas, usa fuera_de_alcance.
 7. No inventes marcas, modelos, precios ni datos que el usuario no haya pedido.`
+const DEFAULT_SEARCH_LLM_SYSTEM_PROMPT = `Eres el LLM de búsqueda interno del bot de mochilas. Recibes solo el contexto del flujo elegido. Devuelve únicamente JSON válido usando solo productos o datos oficiales del contexto. Si no encuentras información suficiente, indícalo en el JSON y sugiere qué detalle falta pedir.`
+const DEFAULT_SEARCH_LLM_INPUT_FORMAT = `{"mensaje_original":"","flujo":"consulta_productos","descripcion_analisis":"","contexto_recuperado":"","historial_reciente":[]}`
+const DEFAULT_SEARCH_LLM_OUTPUT_FORMAT = `{"encontro":false,"respuesta_borrador":"","modelos_encontrados":[],"informacion_encontrada":"","pregunta_sugerida":""}`
+const DEFAULT_FILTER_LLM_SYSTEM_PROMPT = `Eres el filtro final del bot de WhatsApp. Recibes solo el JSON de búsqueda, el flujo y la descripcion del análisis; no recibes contexto de la base de datos. Convierte eso en el mensaje final al cliente. No uses tercera persona, razonamiento, análisis ni inventes datos. Si no hay resultados, pide más detalles sobre tipo de mochila: escuela o trabajo, color, personaje, material o tamaño.`
+const DEFAULT_FILTER_LLM_INPUT_FORMAT = `{"mensaje_original":"","flujo":"consulta_productos","descripcion_analisis":"","resultado_busqueda_json":{}}`
+const DEFAULT_FILTER_LLM_OUTPUT_FORMAT = 'Mensaje final para WhatsApp, sin JSON ni razonamiento.'
 
 function requireAdmin(user: ReturnType<typeof verifyToken>) {
   return user?.role === 'admin'
@@ -58,6 +64,12 @@ async function getOrCreatePolicy() {
       flowClassifierSystemPrompt: DEFAULT_FLOW_CLASSIFIER_SYSTEM_PROMPT,
       flowClassifierInputFormat: DEFAULT_FLOW_CLASSIFIER_INPUT_FORMAT,
       flowClassifierOutputFormat: DEFAULT_FLOW_CLASSIFIER_OUTPUT_FORMAT,
+      searchLlmSystemPrompt: DEFAULT_SEARCH_LLM_SYSTEM_PROMPT,
+      searchLlmInputFormat: DEFAULT_SEARCH_LLM_INPUT_FORMAT,
+      searchLlmOutputFormat: DEFAULT_SEARCH_LLM_OUTPUT_FORMAT,
+      filterLlmSystemPrompt: DEFAULT_FILTER_LLM_SYSTEM_PROMPT,
+      filterLlmInputFormat: DEFAULT_FILTER_LLM_INPUT_FORMAT,
+      filterLlmOutputFormat: DEFAULT_FILTER_LLM_OUTPUT_FORMAT,
       googleMapsUrl: null,
       sketchImageUrl: null
     },
@@ -65,11 +77,19 @@ async function getOrCreatePolicy() {
   })
   const needsInputDefault = !policy.flowClassifierInputFormat.trim()
   const needsSystemPromptDefault = !policy.flowClassifierSystemPrompt.trim()
+  const needsSearchDefaults =
+    !policy.searchLlmSystemPrompt.trim() ||
+    !policy.searchLlmInputFormat.trim() ||
+    !policy.searchLlmOutputFormat.trim()
+  const needsFilterDefaults =
+    !policy.filterLlmSystemPrompt.trim() ||
+    !policy.filterLlmInputFormat.trim() ||
+    !policy.filterLlmOutputFormat.trim()
   const needsOutputDefault =
     !policy.flowClassifierOutputFormat.trim() ||
     (!policy.flowClassifierOutputFormat.includes('"descripcion"') &&
       policy.flowClassifierOutputFormat.includes('"solicitud"'))
-  if (!needsInputDefault && !needsSystemPromptDefault && !needsOutputDefault) return policy
+  if (!needsInputDefault && !needsSystemPromptDefault && !needsOutputDefault && !needsSearchDefaults && !needsFilterDefaults) return policy
   return prisma.backpackBotPolicy.update({
     where: { id: POLICY_ID },
     data: {
@@ -81,7 +101,13 @@ async function getOrCreatePolicy() {
         : policy.flowClassifierInputFormat,
       flowClassifierOutputFormat: needsOutputDefault
         ? DEFAULT_FLOW_CLASSIFIER_OUTPUT_FORMAT
-        : policy.flowClassifierOutputFormat
+        : policy.flowClassifierOutputFormat,
+      searchLlmSystemPrompt: policy.searchLlmSystemPrompt.trim() || DEFAULT_SEARCH_LLM_SYSTEM_PROMPT,
+      searchLlmInputFormat: policy.searchLlmInputFormat.trim() || DEFAULT_SEARCH_LLM_INPUT_FORMAT,
+      searchLlmOutputFormat: policy.searchLlmOutputFormat.trim() || DEFAULT_SEARCH_LLM_OUTPUT_FORMAT,
+      filterLlmSystemPrompt: policy.filterLlmSystemPrompt.trim() || DEFAULT_FILTER_LLM_SYSTEM_PROMPT,
+      filterLlmInputFormat: policy.filterLlmInputFormat.trim() || DEFAULT_FILTER_LLM_INPUT_FORMAT,
+      filterLlmOutputFormat: policy.filterLlmOutputFormat.trim() || DEFAULT_FILTER_LLM_OUTPUT_FORMAT
     }
   })
 }
@@ -104,6 +130,12 @@ export async function GET(request: NextRequest) {
       flowClassifierSystemPrompt: policy.flowClassifierSystemPrompt,
       flowClassifierInputFormat: policy.flowClassifierInputFormat,
       flowClassifierOutputFormat: policy.flowClassifierOutputFormat,
+      searchLlmSystemPrompt: policy.searchLlmSystemPrompt,
+      searchLlmInputFormat: policy.searchLlmInputFormat,
+      searchLlmOutputFormat: policy.searchLlmOutputFormat,
+      filterLlmSystemPrompt: policy.filterLlmSystemPrompt,
+      filterLlmInputFormat: policy.filterLlmInputFormat,
+      filterLlmOutputFormat: policy.filterLlmOutputFormat,
       googleMapsUrl: policy.googleMapsUrl,
       sketchImageUrl: policy.sketchImageUrl,
       updatedAt: policy.updatedAt
@@ -146,6 +178,18 @@ export async function PUT(request: NextRequest) {
       typeof body.flowClassifierOutputFormat === 'string'
         ? body.flowClassifierOutputFormat
         : current.flowClassifierOutputFormat
+    const searchLlmSystemPrompt =
+      typeof body.searchLlmSystemPrompt === 'string' ? body.searchLlmSystemPrompt : current.searchLlmSystemPrompt
+    const searchLlmInputFormat =
+      typeof body.searchLlmInputFormat === 'string' ? body.searchLlmInputFormat : current.searchLlmInputFormat
+    const searchLlmOutputFormat =
+      typeof body.searchLlmOutputFormat === 'string' ? body.searchLlmOutputFormat : current.searchLlmOutputFormat
+    const filterLlmSystemPrompt =
+      typeof body.filterLlmSystemPrompt === 'string' ? body.filterLlmSystemPrompt : current.filterLlmSystemPrompt
+    const filterLlmInputFormat =
+      typeof body.filterLlmInputFormat === 'string' ? body.filterLlmInputFormat : current.filterLlmInputFormat
+    const filterLlmOutputFormat =
+      typeof body.filterLlmOutputFormat === 'string' ? body.filterLlmOutputFormat : current.filterLlmOutputFormat
     const googleMapsUrl =
       typeof body.googleMapsUrl === 'string' ? body.googleMapsUrl.trim() || null : current.googleMapsUrl
     const sketchImageUrl =
@@ -161,6 +205,12 @@ export async function PUT(request: NextRequest) {
         flowClassifierSystemPrompt,
         flowClassifierInputFormat,
         flowClassifierOutputFormat,
+        searchLlmSystemPrompt,
+        searchLlmInputFormat,
+        searchLlmOutputFormat,
+        filterLlmSystemPrompt,
+        filterLlmInputFormat,
+        filterLlmOutputFormat,
         googleMapsUrl,
         sketchImageUrl
       },
@@ -171,6 +221,12 @@ export async function PUT(request: NextRequest) {
         flowClassifierSystemPrompt,
         flowClassifierInputFormat,
         flowClassifierOutputFormat,
+        searchLlmSystemPrompt,
+        searchLlmInputFormat,
+        searchLlmOutputFormat,
+        filterLlmSystemPrompt,
+        filterLlmInputFormat,
+        filterLlmOutputFormat,
         googleMapsUrl,
         sketchImageUrl
       }
@@ -183,6 +239,12 @@ export async function PUT(request: NextRequest) {
       flowClassifierSystemPrompt: policy.flowClassifierSystemPrompt,
       flowClassifierInputFormat: policy.flowClassifierInputFormat,
       flowClassifierOutputFormat: policy.flowClassifierOutputFormat,
+      searchLlmSystemPrompt: policy.searchLlmSystemPrompt,
+      searchLlmInputFormat: policy.searchLlmInputFormat,
+      searchLlmOutputFormat: policy.searchLlmOutputFormat,
+      filterLlmSystemPrompt: policy.filterLlmSystemPrompt,
+      filterLlmInputFormat: policy.filterLlmInputFormat,
+      filterLlmOutputFormat: policy.filterLlmOutputFormat,
       googleMapsUrl: policy.googleMapsUrl,
       sketchImageUrl: policy.sketchImageUrl,
       updatedAt: policy.updatedAt

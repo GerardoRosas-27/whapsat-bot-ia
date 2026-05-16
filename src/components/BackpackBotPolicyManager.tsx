@@ -6,6 +6,15 @@ export default function BackpackBotPolicyManager() {
   const [rulesForBot, setRulesForBot] = useState('')
   const [customerFacts, setCustomerFacts] = useState('')
   const [interactionWorkflow, setInteractionWorkflow] = useState('')
+  const [flowClassifierSystemPrompt, setFlowClassifierSystemPrompt] = useState('')
+  const [flowClassifierInputFormat, setFlowClassifierInputFormat] = useState('')
+  const [flowClassifierOutputFormat, setFlowClassifierOutputFormat] = useState('')
+  const [searchLlmSystemPrompt, setSearchLlmSystemPrompt] = useState('')
+  const [searchLlmInputFormat, setSearchLlmInputFormat] = useState('')
+  const [searchLlmOutputFormat, setSearchLlmOutputFormat] = useState('')
+  const [filterLlmSystemPrompt, setFilterLlmSystemPrompt] = useState('')
+  const [filterLlmInputFormat, setFilterLlmInputFormat] = useState('')
+  const [filterLlmOutputFormat, setFilterLlmOutputFormat] = useState('')
   const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState(false)
   const [updatedAt, setUpdatedAt] = useState<string | null>(null)
@@ -27,6 +36,15 @@ export default function BackpackBotPolicyManager() {
       setRulesForBot(data.rulesForBot ?? '')
       setCustomerFacts(data.customerFacts ?? '')
       setInteractionWorkflow(data.interactionWorkflow ?? '')
+      setFlowClassifierSystemPrompt(data.flowClassifierSystemPrompt ?? '')
+      setFlowClassifierInputFormat(data.flowClassifierInputFormat ?? '')
+      setFlowClassifierOutputFormat(data.flowClassifierOutputFormat ?? '')
+      setSearchLlmSystemPrompt(data.searchLlmSystemPrompt ?? '')
+      setSearchLlmInputFormat(data.searchLlmInputFormat ?? '')
+      setSearchLlmOutputFormat(data.searchLlmOutputFormat ?? '')
+      setFilterLlmSystemPrompt(data.filterLlmSystemPrompt ?? '')
+      setFilterLlmInputFormat(data.filterLlmInputFormat ?? '')
+      setFilterLlmOutputFormat(data.filterLlmOutputFormat ?? '')
       if (data.updatedAt) setUpdatedAt(data.updatedAt)
     } catch {
       setMessage({ type: 'err', text: 'Error de conexión' })
@@ -53,7 +71,16 @@ export default function BackpackBotPolicyManager() {
         body: JSON.stringify({
           rulesForBot,
           customerFacts,
-          interactionWorkflow
+          interactionWorkflow,
+          flowClassifierSystemPrompt,
+          flowClassifierInputFormat,
+          flowClassifierOutputFormat,
+          searchLlmSystemPrompt,
+          searchLlmInputFormat,
+          searchLlmOutputFormat,
+          filterLlmSystemPrompt,
+          filterLlmInputFormat,
+          filterLlmOutputFormat
         })
       })
       const data = await res.json().catch(() => ({}))
@@ -64,6 +91,15 @@ export default function BackpackBotPolicyManager() {
       setRulesForBot(data.rulesForBot ?? '')
       setCustomerFacts(data.customerFacts ?? '')
       setInteractionWorkflow(data.interactionWorkflow ?? '')
+      setFlowClassifierSystemPrompt(data.flowClassifierSystemPrompt ?? '')
+      setFlowClassifierInputFormat(data.flowClassifierInputFormat ?? '')
+      setFlowClassifierOutputFormat(data.flowClassifierOutputFormat ?? '')
+      setSearchLlmSystemPrompt(data.searchLlmSystemPrompt ?? '')
+      setSearchLlmInputFormat(data.searchLlmInputFormat ?? '')
+      setSearchLlmOutputFormat(data.searchLlmOutputFormat ?? '')
+      setFilterLlmSystemPrompt(data.filterLlmSystemPrompt ?? '')
+      setFilterLlmInputFormat(data.filterLlmInputFormat ?? '')
+      setFilterLlmOutputFormat(data.filterLlmOutputFormat ?? '')
       if (data.updatedAt) setUpdatedAt(data.updatedAt)
       setMessage({ type: 'ok', text: 'Guardado correctamente.' })
     } catch {
@@ -154,6 +190,60 @@ export default function BackpackBotPolicyManager() {
           resize: 'vertical'
         }}
       />
+
+      {[
+        {
+          title: 'LLM 1 - Análisis de flujo',
+          fields: [
+            ['System prompt', flowClassifierSystemPrompt, setFlowClassifierSystemPrompt],
+            ['Formato de entrada JSON', flowClassifierInputFormat, setFlowClassifierInputFormat],
+            ['Formato de salida JSON', flowClassifierOutputFormat, setFlowClassifierOutputFormat]
+          ] as const
+        },
+        {
+          title: 'LLM 2 - Búsqueda con contexto del flujo',
+          fields: [
+            ['System prompt', searchLlmSystemPrompt, setSearchLlmSystemPrompt],
+            ['Formato de entrada JSON', searchLlmInputFormat, setSearchLlmInputFormat],
+            ['Formato de salida JSON', searchLlmOutputFormat, setSearchLlmOutputFormat]
+          ] as const
+        },
+        {
+          title: 'LLM 3 - Filtro final para WhatsApp',
+          fields: [
+            ['System prompt', filterLlmSystemPrompt, setFilterLlmSystemPrompt],
+            ['Formato de entrada', filterLlmInputFormat, setFilterLlmInputFormat],
+            ['Formato de salida final', filterLlmOutputFormat, setFilterLlmOutputFormat]
+          ] as const
+        }
+      ].map((section) => (
+        <div key={section.title} style={{ marginBottom: '20px', padding: '16px', border: '1px solid #e2e8f0', borderRadius: '8px' }}>
+          <h3 style={{ margin: '0 0 12px', fontSize: '16px', color: '#0f172a' }}>{section.title}</h3>
+          {section.fields.map(([label, value, setter]) => (
+            <label key={label} style={{ display: 'block', marginBottom: '12px', fontWeight: 600, fontSize: '14px', color: '#334155' }}>
+              {label}
+              <textarea
+                value={value}
+                onChange={(e) => setter(e.target.value)}
+                rows={label.includes('System') ? 8 : 5}
+                spellCheck={false}
+                style={{
+                  width: '100%',
+                  maxWidth: '100%',
+                  boxSizing: 'border-box',
+                  padding: '12px',
+                  borderRadius: '6px',
+                  border: '1px solid #e2e8f0',
+                  fontSize: '13px',
+                  fontFamily: 'ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace',
+                  marginTop: '8px',
+                  resize: 'vertical'
+                }}
+              />
+            </label>
+          ))}
+        </div>
+      ))}
 
       <div style={{ display: 'flex', alignItems: 'center', gap: '16px', flexWrap: 'wrap' }}>
         <button

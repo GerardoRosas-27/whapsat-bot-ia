@@ -86,6 +86,12 @@ const DEFAULT_FLOW_CLASSIFIER_OUTPUT_FORMAT = `{
   "flujo": "consulta_productos",
   "descripcion": "Resumen sintetizado y procesado por el LLM de lo que quiere el usuario, considerando el mensaje actual y los últimos 5 mensajes del historial. No inventes datos."
 }`
+const DEFAULT_SEARCH_LLM_SYSTEM_PROMPT = 'Eres el LLM de búsqueda interno del bot de mochilas. Devuelve únicamente JSON válido usando solo el contexto del flujo.'
+const DEFAULT_SEARCH_LLM_INPUT_FORMAT = '{"mensaje_original":"","flujo":"","descripcion_analisis":"","contexto_recuperado":"","historial_reciente":[]}'
+const DEFAULT_SEARCH_LLM_OUTPUT_FORMAT = '{"encontro":false,"respuesta_borrador":"","modelos_encontrados":[],"informacion_encontrada":"","pregunta_sugerida":""}'
+const DEFAULT_FILTER_LLM_SYSTEM_PROMPT = 'Eres el filtro final del bot. Recibes solo el JSON de búsqueda, el flujo y la descripcion del análisis; no recibes contexto de la base de datos. Devuelve solo el mensaje final de WhatsApp, sin razonamiento ni tercera persona.'
+const DEFAULT_FILTER_LLM_INPUT_FORMAT = '{"mensaje_original":"","flujo":"","descripcion_analisis":"","resultado_busqueda_json":{}}'
+const DEFAULT_FILTER_LLM_OUTPUT_FORMAT = 'Mensaje final para WhatsApp, sin JSON ni razonamiento.'
 const DEFAULT_FLOW_CLASSIFIER_SYSTEM_PROMPT = `Eres un clasificador interno y vendedor experto de mochilas escolares, de preescolar y para trabajo.
 Conoces mochilas reforzadas de diferentes materiales y telas: mezclilla, lona, poliéster, impermeables, con candado, para laptop y de uso diario.
 También conoces mochilas de personajes populares y actuales para escuela y preescolar: Stitch, Sonic, Mario, Kuromi, Dragon Ball, Goku, Naruto, caricaturas, dibujos y anime.
@@ -123,6 +129,12 @@ class BackpackWhatsAppBot {
     flowClassifierSystemPrompt: string | null
     flowClassifierInputFormat: string | null
     flowClassifierOutputFormat: string | null
+    searchLlmSystemPrompt: string | null
+    searchLlmInputFormat: string | null
+    searchLlmOutputFormat: string | null
+    filterLlmSystemPrompt: string | null
+    filterLlmInputFormat: string | null
+    filterLlmOutputFormat: string | null
     googleMapsUrl: string | null
     sketchImageUrl: string | null
     fetchedAt: number
@@ -408,6 +420,12 @@ class BackpackWhatsAppBot {
     flowClassifierSystemPrompt: string | null
     flowClassifierInputFormat: string | null
     flowClassifierOutputFormat: string | null
+    searchLlmSystemPrompt: string | null
+    searchLlmInputFormat: string | null
+    searchLlmOutputFormat: string | null
+    filterLlmSystemPrompt: string | null
+    filterLlmInputFormat: string | null
+    filterLlmOutputFormat: string | null
     googleMapsUrl: string | null
     sketchImageUrl: string | null
   }> {
@@ -423,6 +441,12 @@ class BackpackWhatsAppBot {
         flowClassifierSystemPrompt: this.policyCache.flowClassifierSystemPrompt,
         flowClassifierInputFormat: this.policyCache.flowClassifierInputFormat,
         flowClassifierOutputFormat: this.policyCache.flowClassifierOutputFormat,
+        searchLlmSystemPrompt: this.policyCache.searchLlmSystemPrompt,
+        searchLlmInputFormat: this.policyCache.searchLlmInputFormat,
+        searchLlmOutputFormat: this.policyCache.searchLlmOutputFormat,
+        filterLlmSystemPrompt: this.policyCache.filterLlmSystemPrompt,
+        filterLlmInputFormat: this.policyCache.filterLlmInputFormat,
+        filterLlmOutputFormat: this.policyCache.filterLlmOutputFormat,
         googleMapsUrl: this.policyCache.googleMapsUrl,
         sketchImageUrl: this.policyCache.sketchImageUrl
       }
@@ -452,6 +476,12 @@ class BackpackWhatsAppBot {
         !rawFlowClassifierOutputFormat.includes('"solicitud"'))
         ? rawFlowClassifierOutputFormat
         : DEFAULT_FLOW_CLASSIFIER_OUTPUT_FORMAT
+    const searchLlmSystemPrompt = row?.searchLlmSystemPrompt?.trim() || DEFAULT_SEARCH_LLM_SYSTEM_PROMPT
+    const searchLlmInputFormat = row?.searchLlmInputFormat?.trim() || DEFAULT_SEARCH_LLM_INPUT_FORMAT
+    const searchLlmOutputFormat = row?.searchLlmOutputFormat?.trim() || DEFAULT_SEARCH_LLM_OUTPUT_FORMAT
+    const filterLlmSystemPrompt = row?.filterLlmSystemPrompt?.trim() || DEFAULT_FILTER_LLM_SYSTEM_PROMPT
+    const filterLlmInputFormat = row?.filterLlmInputFormat?.trim() || DEFAULT_FILTER_LLM_INPUT_FORMAT
+    const filterLlmOutputFormat = row?.filterLlmOutputFormat?.trim() || DEFAULT_FILTER_LLM_OUTPUT_FORMAT
     this.policyCache = {
       rulesForBot,
       customerFacts,
@@ -459,6 +489,12 @@ class BackpackWhatsAppBot {
       flowClassifierSystemPrompt,
       flowClassifierInputFormat,
       flowClassifierOutputFormat,
+      searchLlmSystemPrompt,
+      searchLlmInputFormat,
+      searchLlmOutputFormat,
+      filterLlmSystemPrompt,
+      filterLlmInputFormat,
+      filterLlmOutputFormat,
       googleMapsUrl,
       sketchImageUrl,
       fetchedAt: now
@@ -470,6 +506,12 @@ class BackpackWhatsAppBot {
       flowClassifierSystemPrompt,
       flowClassifierInputFormat,
       flowClassifierOutputFormat,
+      searchLlmSystemPrompt,
+      searchLlmInputFormat,
+      searchLlmOutputFormat,
+      filterLlmSystemPrompt,
+      filterLlmInputFormat,
+      filterLlmOutputFormat,
       googleMapsUrl,
       sketchImageUrl
     }
@@ -689,7 +731,7 @@ class BackpackWhatsAppBot {
       }
     }
     await sendTyping()
-    const typingInterval = setInterval(sendTyping, 4_000)
+    const typingInterval = setInterval(sendTyping, 2_500)
     try {
       return await work()
     } finally {
@@ -1011,17 +1053,16 @@ class BackpackWhatsAppBot {
       return
     }
 
-    const policy = await this.getBackpackPolicy()
-    const products = await fetchBackpackCatalogForLlm()
-    const session = await this.getSession(phoneNumber)
-    const prevHistory = session.context?.agentHistory ?? []
-    const clarificationAttempts = session.context?.agentClarificationAttempts ?? 0
-    const clarificationKey = session.context?.agentClarificationKey ?? null
-    console.log(
-      `[BackpackBot] LLM texto para ${phoneNumber} | productos=${products.length} | modelo=${getLlmModel()} | base=${getLlmBaseUrl()}`
-    )
-
     const turn = await this.withCustomerTyping(message, async () => {
+      const policy = await this.getBackpackPolicy()
+      const products = await fetchBackpackCatalogForLlm()
+      const session = await this.getSession(phoneNumber)
+      const prevHistory = session.context?.agentHistory ?? []
+      const clarificationAttempts = session.context?.agentClarificationAttempts ?? 0
+      const clarificationKey = session.context?.agentClarificationKey ?? null
+      console.log(
+        `[BackpackBot] LLM texto para ${phoneNumber} | productos=${products.length} | modelo=${getLlmModel()} | base=${getLlmBaseUrl()}`
+      )
       let result: Awaited<ReturnType<typeof runBackpackAgentTurnWithMeta>>
       try {
         result = await runBackpackAgentTurnWithMeta({
@@ -1032,7 +1073,13 @@ class BackpackWhatsAppBot {
             interactionWorkflow: policy.interactionWorkflow,
             flowClassifierSystemPrompt: policy.flowClassifierSystemPrompt,
             flowClassifierInputFormat: policy.flowClassifierInputFormat,
-            flowClassifierOutputFormat: policy.flowClassifierOutputFormat
+            flowClassifierOutputFormat: policy.flowClassifierOutputFormat,
+            searchLlmSystemPrompt: policy.searchLlmSystemPrompt,
+            searchLlmInputFormat: policy.searchLlmInputFormat,
+            searchLlmOutputFormat: policy.searchLlmOutputFormat,
+            filterLlmSystemPrompt: policy.filterLlmSystemPrompt,
+            filterLlmInputFormat: policy.filterLlmInputFormat,
+            filterLlmOutputFormat: policy.filterLlmOutputFormat
           },
           products,
           history: prevHistory,
@@ -1072,6 +1119,10 @@ class BackpackWhatsAppBot {
     })
     if (!turn) return
 
+    const session = await this.getSession(phoneNumber)
+    const prevHistory = session.context?.agentHistory ?? []
+    const clarificationAttempts = session.context?.agentClarificationAttempts ?? 0
+    const clarificationKey = session.context?.agentClarificationKey ?? null
     const nextHistory: BackpackAgentHistoryTurn[] = [
       ...prevHistory,
       { role: 'user', content: body.slice(0, 2000) },

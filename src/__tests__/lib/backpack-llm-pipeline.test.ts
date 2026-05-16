@@ -17,6 +17,8 @@ const fakeProducts: BackpackProduct[] = [
     imageUrl: null,
     useType: 'school',
     gender: 'unisex',
+    sizes: '[]',
+    colors: '[]',
     price: 100,
     stock: 2,
     isActive: true,

@@ -9,6 +9,31 @@ function requireAdmin(user: ReturnType<typeof verifyToken>) {
   return true
 }
 
+const VALID_SIZES = ['chica', 'mediana', 'grande', 'extragrande']
+const VALID_COLORS = [
+  'negro',
+  'blanco',
+  'rojo',
+  'azul',
+  'verde',
+  'amarillo',
+  'rosa',
+  'morado',
+  'gris',
+  'cafe',
+  'beige',
+  'naranja',
+  'multicolor'
+]
+
+function normalizeSelection(value: unknown, allowed: string[]): string | undefined {
+  if (!Array.isArray(value)) return undefined
+  const selected = value
+    .map((item) => String(item).trim().toLowerCase())
+    .filter((item, index, arr) => allowed.includes(item) && arr.indexOf(item) === index)
+  return JSON.stringify(selected)
+}
+
 async function resolveId(
   request: NextRequest,
   params: Promise<{ id: string }> | { id: string }
@@ -92,6 +117,8 @@ export async function PATCH(
       imageUrl?: string | null
       useType?: string
       gender?: string
+      sizes?: string
+      colors?: string
       stock?: number
       price?: number
       isActive?: boolean
@@ -115,10 +142,18 @@ export async function PATCH(
     if (body.stock !== undefined) data.stock = Math.max(0, Number(body.stock))
     if (body.price !== undefined) data.price = Math.max(0, Number(body.price))
     if (body.isActive !== undefined) data.isActive = Boolean(body.isActive)
+    if (body.sizes !== undefined) {
+      const sizes = normalizeSelection(body.sizes, VALID_SIZES)
+      if (sizes !== undefined) data.sizes = sizes
+    }
+    if (body.colors !== undefined) {
+      const colors = normalizeSelection(body.colors, VALID_COLORS)
+      if (colors !== undefined) data.colors = colors
+    }
 
     if (Object.keys(data).length === 0) {
       return NextResponse.json(
-        { error: 'No hay campos para actualizar. Incluye al menos uno: name, description, imageUrl, useType, gender, stock, price, isActive' },
+        { error: 'No hay campos para actualizar. Incluye al menos uno: name, description, imageUrl, useType, gender, sizes, colors, stock, price, isActive' },
         { status: 400 }
       )
     }

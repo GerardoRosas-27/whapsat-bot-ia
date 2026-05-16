@@ -9,6 +9,8 @@ const fakeProducts: BackpackProduct[] = [
     imageUrl: null,
     useType: 'school',
     gender: 'unisex',
+    sizes: '[]',
+    colors: '[]',
     price: 450,
     stock: 3,
     isActive: true,
@@ -19,10 +21,124 @@ const fakeProducts: BackpackProduct[] = [
 
 describe('runBackpackAgentTurn', () => {
   const originalFetch = global.fetch
+  const originalUnifiedReasoning = process.env.BACKPACK_LLM_UNIFIED_REASONING
 
   afterEach(() => {
     global.fetch = originalFetch
+    process.env.BACKPACK_LLM_UNIFIED_REASONING = originalUnifiedReasoning
     jest.restoreAllMocks()
+  })
+
+  it('consulta de producto usa analisis rápido y segundo LLM con reasoning', async () => {
+    let requestBody: {
+      messages?: Array<{ role: string; content: string }>
+      reasoning_effort?: string
+      reasoning?: { effort?: string }
+    } = {}
+    const requests: Array<typeof requestBody> = []
+    global.fetch = jest.fn(async (_url, init) => {
+      requestBody = JSON.parse((init?.body as string) || '{}')
+      requests.push(requestBody)
+      return new Response(
+        JSON.stringify({
+          choices: [
+            {
+              message: {
+                content:
+                  requests.length === 1
+                    ? '{"flujo":"consulta_productos","descripcion":"busca mochila negra escolar","respuesta_directa":""}'
+                    : 'Sí, tenemos la Mochila Escolar Luna en $450.00.'
+              }
+            }
+          ]
+        }),
+        { status: 200, headers: { 'Content-Type': 'application/json' } }
+      )
+    }) as unknown as typeof fetch
+
+    const result = await runBackpackAgentTurnWithMeta({
+      userText: 'Tienes mochila negra escolar?',
+      policy: {
+        customerFacts: 'Horario de atención: lunes a viernes de 8 a 5.',
+        flowClassifierSystemPrompt: 'analiza flujo',
+        searchLlmSystemPrompt: 'busca en catálogo',
+        filterLlmSystemPrompt: 'filtra respuesta'
+      },
+      products: fakeProducts,
+      history: []
+    })
+
+    const systemPrompt = requests[1].messages?.[0]?.content ?? ''
+    expect(global.fetch).toHaveBeenCalledTimes(2)
+    expect(requests[0].reasoning_effort).toBe('none')
+    expect(requests[1].reasoning_effort).toBe('high')
+    expect(requests[1].reasoning?.effort).toBe('high')
+    expect(systemPrompt).toContain('LLM de productos')
+    expect(systemPrompt).toContain('busca en catálogo')
+    expect(systemPrompt).toContain('filtra respuesta')
+    expect(systemPrompt).toContain('Mochila Escolar Luna')
+    expect(systemPrompt).not.toContain('Horario de atención: lunes a viernes de 8 a 5.')
+    expect(result.reply).toBe('Sí, tenemos la Mochila Escolar Luna en $450.00.')
+  })
+
+  it('primer LLM clasifica "Tienes mochilas de personajes?" como consulta_productos', async () => {
+    const requests: Array<{
+      messages?: Array<{ role: string; content: string }>
+      reasoning_effort?: string
+    }> = []
+    global.fetch = jest.fn(async (_url, init) => {
+      const parsed = JSON.parse((init?.body as string) || '{}')
+      requests.push(parsed)
+      return new Response(
+        JSON.stringify({
+          choices: [
+            {
+              message: {
+                content:
+                  requests.length === 1
+                    ? '{"flujo":"consulta_productos","descripcion":"busca mochilas de personajes","respuesta_directa":""}'
+                    : 'Sí, tenemos la mochila de sonic en $175.00.'
+              }
+            }
+          ]
+        }),
+        { status: 200, headers: { 'Content-Type': 'application/json' } }
+      )
+    }) as unknown as typeof fetch
+
+    const result = await runBackpackAgentTurnWithMeta({
+      userText: 'Tienes mochilas de personajes?',
+      policy: {
+        customerFacts: 'Horario de atención: lunes a viernes de 8 a 5.',
+        flowClassifierSystemPrompt: 'Clasifica productos aunque no tengas catálogo.'
+      },
+      products: [
+        {
+          ...fakeProducts[0],
+          id: 'sonic',
+          name: 'mochila de sonic',
+          description: 'mochila escolar de personaje sonic',
+          price: 175,
+          stock: 5
+        }
+      ],
+      history: [
+        { role: 'user', content: 'Hola' },
+        { role: 'assistant', content: 'Hola, ¿qué mochila buscas?' }
+      ]
+    })
+
+    const firstSystemPrompt = requests[0].messages?.[0]?.content ?? ''
+    const firstPayload = JSON.stringify(requests[0].messages ?? [])
+    const productSystemPrompt = requests[1].messages?.[0]?.content ?? ''
+    expect(global.fetch).toHaveBeenCalledTimes(2)
+    expect(requests[0].reasoning_effort).toBe('none')
+    expect(firstSystemPrompt).toContain('el flujo debe ser consulta_productos')
+    expect(firstPayload).toContain('historial_ultimos_5_mensajes')
+    expect(firstPayload).toContain('Tienes mochilas de personajes?')
+    expect(productSystemPrompt).toContain('LLM de productos')
+    expect(requests[1].reasoning_effort).toBe('high')
+    expect(result.reply).toBe('Sí, tenemos la mochila de sonic en $175.00.')
   })
 
   it('pide más detalles con el LLM cuando no encuentra información en la BD', async () => {
@@ -367,9 +483,9 @@ describe('runBackpackAgentTurn', () => {
   })
 
   it('pasa la política de entrega al LLM para que responda al cliente', async () => {
-    let parsed: { messages?: Array<{ role: string; content: string }> } = {}
+    const requests: Array<{ messages?: Array<{ role: string; content: string }> }> = []
     global.fetch = jest.fn(async (_url, init) => {
-      parsed = JSON.parse((init?.body as string) || '{}')
+      requests.push(JSON.parse((init?.body as string) || '{}'))
       return new Response(
         JSON.stringify({
           choices: [
@@ -407,19 +523,16 @@ describe('runBackpackAgentTurn', () => {
       history: []
     })
 
-    const systemPrompt = parsed.messages?.[0]?.content ?? ''
-    expect(systemPrompt).toContain('Información oficial del negocio (Datos de empresa configurados)')
-    expect(systemPrompt).toContain('Las entregas se hacen solo en sucursal Centro')
-    expect(systemPrompt).toContain('Para compras por caja podemos coordinar envío regional')
+    expect(global.fetch).toHaveBeenCalledTimes(0)
     expect(reply).toBe(
-      'Las entregas se hacen solo en sucursal Centro. Para compras por caja podemos coordinar envío regional.'
+      'Envíos y entregas\n• Las entregas se hacen solo en sucursal Centro.\n• Para compras por caja podemos coordinar envío regional.'
     )
   })
 
   it('pasa el horario de atención al LLM para que responda apertura y cierre', async () => {
-    let parsed: { messages?: Array<{ role: string; content: string }> } = {}
+    const requests: Array<{ messages?: Array<{ role: string; content: string }> }> = []
     global.fetch = jest.fn(async (_url, init) => {
-      parsed = JSON.parse((init?.body as string) || '{}')
+      requests.push(JSON.parse((init?.body as string) || '{}'))
       return new Response(
         JSON.stringify({
           choices: [
@@ -455,11 +568,8 @@ describe('runBackpackAgentTurn', () => {
       history: []
     })
 
-    const systemPrompt = parsed.messages?.[0]?.content ?? ''
-    expect(systemPrompt).toContain('Información oficial del negocio (Datos de empresa configurados)')
-    expect(systemPrompt).toContain('Horario de atención')
-    expect(systemPrompt).toContain('De lunes a viernes de 8:15 a 17:45 horas')
-    expect(reply).toBe('Abrimos de lunes a viernes de 8:15 a 17:45 horas.')
+    expect(global.fetch).toHaveBeenCalledTimes(0)
+    expect(reply).toBe('Horario de atención\n• De lunes a viernes de 8:15 a 17:45 horas')
   })
 
   it('usa la política oficial como red de seguridad si el LLM responde con meta texto', async () => {
@@ -519,7 +629,8 @@ describe('runBackpackAgentTurn', () => {
                 content: isClassifier
                   ? JSON.stringify({
                       flujo: 'consulta_horarios',
-                      descripcion: 'quiere saber a qué hora abren y cierran'
+                      descripcion: 'quiere saber a qué hora abren y cierran',
+                      respuesta_directa: 'Abrimos de lunes a viernes de 8:15 a 17:45 horas.'
                     })
                   : 'Abrimos de lunes a viernes de 8:15 a 17:45 horas.'
               }
@@ -552,17 +663,12 @@ describe('runBackpackAgentTurn', () => {
       ]
     })
 
-    const classifierPayload = requests[0].messages?.[1]?.content ?? ''
-    const finalSystemPrompt = requests[1].messages?.[0]?.content ?? ''
+    const classifierPayload = JSON.stringify(requests[0].messages ?? [])
 
-    expect(global.fetch).toHaveBeenCalledTimes(2)
+    expect(global.fetch).toHaveBeenCalledTimes(1)
     expect(classifierPayload).toContain('historial_ultimos_5_mensajes')
     expect(classifierPayload).toContain('mensaje reciente')
     expect(classifierPayload).not.toContain('Mochila Escolar Luna')
-    expect(finalSystemPrompt).toContain('Flujo activado: consulta_horarios')
-    expect(finalSystemPrompt).toContain('De lunes a viernes de 8:15 a 17:45 horas')
-    expect(finalSystemPrompt).not.toContain('Mochila Escolar Luna')
-    expect(finalSystemPrompt).not.toContain('No hay entregas fuera de sucursal')
     expect(reply).toBe('Abrimos de lunes a viernes de 8:15 a 17:45 horas.')
   })
 
@@ -729,7 +835,7 @@ describe('runBackpackAgentTurn', () => {
     })
   })
 
-  it('para modelos de personajes pide qué personaje busca sin heredar intentos de otra consulta', async () => {
+  it('para modelos de personajes pide detalles genéricos sin heredar intentos de otra consulta', async () => {
     const requests: Array<{ messages?: Array<{ role: string; content: string }> }> = []
     global.fetch = jest.fn(async (_url, init) => {
       const parsed = JSON.parse((init?.body as string) || '{}')
@@ -742,7 +848,7 @@ describe('runBackpackAgentTurn', () => {
                 content:
                   requests.length === 1
                     ? '{"flujo":"consulta_productos","descripcion":"busca modelos de personajes"}'
-                    : '¿Qué personaje buscas en la mochila?'
+                    : '¿Qué tipo de mochila buscas? Puedes darme más detalles: si es para escuela o trabajo, color, personaje, material o tamaño.'
               }
             }
           ]
@@ -773,8 +879,8 @@ describe('runBackpackAgentTurn', () => {
       clarificationKey: 'consulta_productos:busca mochilas con ruedas'
     })
 
-    expect(global.fetch).toHaveBeenCalledTimes(2)
-    expect(result.reply).toBe('¿Qué personaje buscas en la mochila?')
+    expect(global.fetch).toHaveBeenCalledTimes(4)
+    expect(result.reply).toBe('¿Qué tipo de mochila buscas? Puedes darme más detalles: si es para escuela o trabajo, color, personaje, material o tamaño.')
     expect(result.needsClarification).toBe(true)
     expect(result.exhaustedClarification).toBe(false)
     expect(result.clarificationKey).toContain('personajes')
@@ -825,9 +931,119 @@ describe('runBackpackAgentTurn', () => {
     })
 
     expect(global.fetch).toHaveBeenCalledTimes(4)
-    expect(result.reply).toBe('¿Qué personaje buscas en la mochila?')
+    expect(result.reply).toBe('¿Qué tipo de mochila buscas? Puedes darme más detalles: si es para escuela o trabajo, color, personaje, material o tamaño.')
     expect(result.needsClarification).toBe(true)
     expect(result.exhaustedClarification).toBe(false)
+  })
+
+  it('flujo completo inicial: "Hola tines de personajes" pide detalle del personaje', async () => {
+    const requests: Array<{ messages?: Array<{ role: string; content: string }> }> = []
+    global.fetch = jest.fn(async (_url, init) => {
+      const parsed = JSON.parse((init?.body as string) || '{}')
+      requests.push(parsed)
+      return new Response(
+        JSON.stringify({
+          choices: [
+            {
+              message: {
+                content:
+                  requests.length === 1
+                    ? '{"flujo":"consulta_productos","descripcion":"busca mochilas de personajes"}'
+                    : 'No encontré información sobre eso.'
+              }
+            }
+          ]
+        }),
+        { status: 200, headers: { 'Content-Type': 'application/json' } }
+      )
+    }) as unknown as typeof fetch
+
+    const result = await runBackpackAgentTurnWithMeta({
+      userText: 'Hola tines de personajes',
+      policy: {
+        flowClassifierInputFormat: '{}',
+        flowClassifierOutputFormat: '{"flujo":"consulta_productos","descripcion":"..."}',
+        customerFacts: 'Horario de atención: lunes a viernes de 8 a 5.'
+      },
+      products: [
+        {
+          ...fakeProducts[0],
+          id: 'bitono',
+          name: 'bitono',
+          description: 'mochila escolar sencilla',
+          price: 175,
+          stock: 5
+        }
+      ],
+      history: [],
+      clarificationAttempts: 0,
+      clarificationKey: null
+    })
+
+    expect(requests[0].messages?.[1]?.content).toContain('Hola tines de personajes')
+    expect(global.fetch).toHaveBeenCalledTimes(4)
+    expect(result).toEqual({
+      reply: '¿Qué tipo de mochila buscas? Puedes darme más detalles: si es para escuela o trabajo, color, personaje, material o tamaño.',
+      needsClarification: true,
+      exhaustedClarification: false,
+      clarificationKey: expect.stringContaining('personajes')
+    })
+  })
+
+  it('descarta razonamiento interno del LLM de aclaración y usa pregunta genérica', async () => {
+    const metaReply =
+      'El usuario preguntó por "tines de personajes".\n' +
+      'La base de datos no encontró productos activos para esa consulta.\n' +
+      'Debo pedir al usuario que especifique qué tipo de producto o personaje busca para poder ayudarle a encontrar algo.\n' +
+      'Objetivo: Pedir el detalle más útil para refinar la búsqueda.\n' +
+      'Idioma: Español de México.\n' +
+      'Límite: Máximo 2 líneas.¿Podrías decirme qué tipo de personajes o tines estás buscando?'
+    const requests: Array<{ messages?: Array<{ role: string; content: string }> }> = []
+    global.fetch = jest.fn(async (_url, init) => {
+      const parsed = JSON.parse((init?.body as string) || '{}')
+      requests.push(parsed)
+      return new Response(
+        JSON.stringify({
+          choices: [
+            {
+              message: {
+                content:
+                  requests.length === 1
+                    ? '{"flujo":"consulta_productos","descripcion":"busca mochilas de personajes"}'
+                    : metaReply
+              }
+            }
+          ]
+        }),
+        { status: 200, headers: { 'Content-Type': 'application/json' } }
+      )
+    }) as unknown as typeof fetch
+
+    const result = await runBackpackAgentTurnWithMeta({
+      userText: 'Hola tines de personajes ?',
+      policy: {
+        flowClassifierInputFormat: '{}',
+        flowClassifierOutputFormat: '{"flujo":"consulta_productos","descripcion":"..."}',
+        customerFacts: 'Horario de atención: lunes a viernes de 8 a 5.'
+      },
+      products: [
+        {
+          ...fakeProducts[0],
+          id: 'bitono',
+          name: 'bitono',
+          description: 'mochila escolar sencilla',
+          price: 175,
+          stock: 5
+        }
+      ],
+      history: []
+    })
+
+    expect(global.fetch).toHaveBeenCalledTimes(4)
+    expect(result.reply).toBe('¿Qué tipo de mochila buscas? Puedes darme más detalles: si es para escuela o trabajo, color, personaje, material o tamaño.')
+    expect(result.reply).not.toContain('El usuario')
+    expect(result.reply).not.toContain('tines')
+    expect(result.needsClarification).toBe(true)
   })
 
   it('fuera de alcance también entra al ciclo de aclaración hasta 3 veces', async () => {
@@ -860,7 +1076,7 @@ describe('runBackpackAgentTurn', () => {
     })
 
     expect(global.fetch).toHaveBeenCalledTimes(1)
-    expect(result.reply).toContain('Vendemos mochilas')
+    expect(result.reply).toContain('Qué tipo de mochila buscas')
     expect(result.needsClarification).toBe(true)
     expect(result.exhaustedClarification).toBe(false)
   })
@@ -893,8 +1109,7 @@ describe('runBackpackAgentTurn', () => {
     })
 
     expect(global.fetch).toHaveBeenCalledTimes(1)
-    expect(result.reply).toContain('Vendemos mochilas')
-    expect(result.reply).toContain('Dame más detalles')
+    expect(result.reply).toContain('Qué tipo de mochila buscas')
     expect(result.needsClarification).toBe(true)
   })
 })
