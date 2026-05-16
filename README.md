@@ -36,7 +36,7 @@ Edita el archivo `.env` y configura:
 - `JWT_SECRET`: Clave secreta para JWT (cambia esto en producción)
 - `ADMIN_USERNAME`: Usuario admin (por defecto: admin)
 - `ADMIN_PASSWORD`: Contraseña admin (por defecto: admin123)
-- `BACKPACK_LLM_UNIFIED_REASONING`: `true` activa el modo de un solo LLM por mensaje para el bot de mochilas, con contexto unificado y reasoning local habilitado.
+- `BACKPACK_LLM_UNIFIED_REASONING`: el bot de mochilas usa siempre un solo LLM con contexto unificado; `true` activa reasoning local y `false` lo deja sin pensamiento.
 
 4. Inicializa la base de datos:
 ```bash

@@ -1375,7 +1375,7 @@ async function runUnifiedReasoningAgentTurn(
       messages,
       temperature: input.temperature ?? 0.25,
       maxTokens: getLlmMaxResponseTokens(),
-      enableReasoning: true
+      enableReasoning: isUnifiedReasoningModeEnabled()
     })
   } catch (error) {
     console.warn(
@@ -1395,12 +1395,21 @@ async function runUnifiedReasoningAgentTurn(
   if (
     looksLikeMetaNarration(reply) ||
     looksLikeCodeOrInternalOutput(reply) ||
+    looksLikeWrongLanguage(reply) ||
     looksLikeUnansweredReply(reply)
   ) {
-    reply = '¿Qué tipo de mochila buscas? Puedes darme más detalles: si es para escuela o trabajo, color, personaje, material o tamaño.'
+    const fallbackCtx: GroundedAgentContext = {
+      scope: 'product',
+      userText,
+      products: input.products,
+      businessFacts: '',
+      searchSummary: 'Modo unificado: respuesta final no válida.'
+    }
+    reply = buildDeterministicGroundedReply(fallbackCtx)
+    const needsClarification = reply === UNKNOWN_PRODUCT_FALLBACK || looksLikeUnansweredReply(reply)
     return {
       reply,
-      needsClarification: true,
+      needsClarification,
       exhaustedClarification: false,
       clarificationKey: `unified:${normalizeText(userText).slice(0, 140)}`
     }
@@ -1427,6 +1436,7 @@ export async function runBackpackAgentTurnWithMeta(
   const userText =
     input.userText.trim() ||
     '(El cliente envió un mensaje vacío. Pide amablemente que escriba su pregunta sobre mochilas.)'
+  return runUnifiedReasoningAgentTurn(input, contextFile, userText)
   const fastAnalysis = await runFastAnalysisTurn({
     userText,
     history: input.history,
