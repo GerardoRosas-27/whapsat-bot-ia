@@ -407,12 +407,15 @@ function parseFastAnalysisReply(text: string, userText: string): FastAnalysisRes
       respuesta_directa?: unknown
       respuestaDirecta?: unknown
     }
+    const descripcion =
+      typeof parsed.descripcion === 'string'
+        ? parsed.descripcion.trim()
+        : parsed.descripcion && typeof parsed.descripcion === 'object'
+          ? JSON.stringify(parsed.descripcion)
+          : userText
     return {
       flujo: normalizeFastFlow(parsed.flujo),
-      descripcion:
-        typeof parsed.descripcion === 'string' && parsed.descripcion.trim()
-          ? parsed.descripcion.trim()
-          : userText,
+      descripcion,
       respuestaDirecta:
         typeof parsed.respuesta_directa === 'string'
           ? parsed.respuesta_directa.trim()
@@ -432,17 +435,35 @@ function buildFastAnalysisSystemPrompt(input: {
 
 Esta es la primera llamada rápida SIN pensamiento. Recibes datos de empresa, pero NO recibes catálogo.
 También recibes los últimos 5 mensajes del historial para resolver referencias y entender si el cliente está pidiendo productos.
+Trabaja siempre en español de México. Si respondes directo al cliente, la respuesta debe estar en español de México.
 Objetivo:
 1. Decide el flujo.
 2. Si el flujo es consulta_ubicacion, consulta_horarios o consulta_politicas, responde directo usando SOLO Datos de empresa.
-3. Si el flujo es consulta_productos, NO respondas al cliente; solo devuelve flujo y descripcion.
+3. Si el flujo es consulta_productos, NO respondas al cliente; devuelve una descripcion DETALLADA para otro LLM que sí buscará en catálogo.
 4. Si es fuera_de_alcance o no entiendes, responde con: "${UNKNOWN_PRODUCT_FALLBACK}"
 5. Si no hay datos suficientes de empresa para un flujo de negocio, pide el dato faltante de forma breve.
+
+Flujo actual de 2 LLM:
+- LLM 1 (este): analiza intención con datos de empresa e historial. Responde directo solo para datos de empresa o fuera de alcance.
+- LLM 2: solo se llama si este JSON dice consulta_productos. Recibe catálogo y usa la descripcion detallada para buscar productos.
 
 Formato obligatorio de salida JSON:
 {
   "flujo": "consulta_productos",
-  "descripcion": "descripcion sintetizada conservando palabras clave",
+  "descripcion": {
+    "intencion": "buscar mochila de personaje",
+    "consulta_catalogo": "mochila naruto personaje escuela",
+    "palabras_clave_actuales": ["naruto", "personaje"],
+    "palabras_clave_historial": ["mochilas", "personajes"],
+    "atributos": {
+      "personaje": "naruto",
+      "uso": "escuela",
+      "color": "",
+      "material": "",
+      "tamano": ""
+    },
+    "detalle_para_busqueda": "El cliente primero pidió mochilas de personajes y ahora especifica Naruto; buscar modelos de Naruto en catálogo."
+  },
   "respuesta_directa": "solo para ubicación/horarios/políticas/fuera_de_alcance; vacío para consulta_productos"
 }
 
@@ -450,9 +471,12 @@ Reglas:
 - No escribas pensamiento ni explicación fuera del JSON.
 - No inventes datos.
 - Corrige typos comunes: "tines" = "tienes".
+- Usa el historial de forma genérica para deducir qué quiere el usuario, dando más peso al último mensaje. Si el último mensaje especifica un personaje, color, material, tamaño o uso, ese detalle manda sobre mensajes anteriores.
 - Si el cliente menciona mochilas, modelos, personajes, caricaturas, anime, preescolar, escuela, trabajo, marcas deportivas, colores, material o tamaño, el flujo debe ser consulta_productos aunque no tengas catálogo en esta llamada.
 - Ejemplos de consulta_productos: "Tienes mochilas de personajes?", "busco una de sonic", "hay reforzadas", "tienes para trabajo", "mochila negra escolar".
-- Conserva palabras clave en descripcion para que el segundo LLM busque en catálogo.
+- Para consulta_productos, descripcion NO debe ser un resumen corto. Debe ser un JSON detallado para otro LLM, conservando palabras clave del mensaje actual y del historial: personaje, marca, color, material, uso, tamaño, género y cualquier detalle útil.
+- Si el mensaje actual es un detalle de una pregunta anterior, combina historial + mensaje actual. Ejemplo: historial "Tienes de personajes" y mensaje actual "De personaje de Naruto" => consulta_catalogo debe incluir "naruto" y "personaje".
+- Para datos de empresa, respuesta_directa debe cumplir reglas del filtro final: mensaje claro, corto, directo al cliente, sin pensamientos, sin tercera persona, sin "el usuario", sin "debo", sin JSON visible al cliente.
 
 Datos de empresa:
 ${input.policy.customerFacts.trim() || '(Sin datos de empresa configurados.)'}`
@@ -547,10 +571,12 @@ function buildProductReasoningSystemPrompt(input: {
   return `Eres el LLM de productos del bot de WhatsApp de una tienda de mochilas.
 Esta llamada SÍ puede usar modo pensamiento, pero tu salida debe ser SOLO el mensaje final para el cliente.
 Recibes únicamente contexto de catálogo recuperado para consulta_productos.
+Responde SIEMPRE en español de México, aunque pienses en otro idioma o el modelo tienda a responder en inglés.
+Si el historial dice que buscaban personajes y el mensaje actual especifica "Naruto", deduce que buscan una mochila de personaje Naruto.
 
 Trabajo interno:
 1. Busca productos usando la descripcion del análisis y el catálogo.
-2. Aplica las reglas del filtro final: respuesta clara, corta, directa, sin tercera persona ni razonamientos.
+2. Aplica las reglas del filtro final: respuesta clara, corta, directa, en español, sin tercera persona ni razonamientos.
 3. Si encuentras modelos, menciona solo nombres exactos del catálogo y datos respaldados.
 4. Si no encuentras coincidencias reales o falta detalle, pregunta:
 "${UNKNOWN_PRODUCT_FALLBACK}"
@@ -1116,6 +1142,16 @@ function looksLikeMetaNarration(reply: string): boolean {
   )
 }
 
+function looksLikeWrongLanguage(reply: string): boolean {
+  const t = reply.trim()
+  if (!t) return false
+  const englishSignals = [
+    /\b(yes|yeah|we have|we carry|available|backpack|backpacks|school|work|color|size|character|do you want|are you looking)\b/i,
+    /\b(this model|that model|in stock|out of stock|please specify)\b/i
+  ]
+  return englishSignals.some((pattern) => pattern.test(t))
+}
+
 function extractPrices(reply: string): string[] {
   return (reply.match(/\$\s*\d+(?:[.,]\d{1,2})?/g) ?? []).map((price) =>
     price.replace(/\s+/g, '').replace(',', '.')
@@ -1128,6 +1164,10 @@ function validateGroundedReply(reply: string, ctx: GroundedAgentContext): string
   }
 
   if (looksLikeMetaNarration(reply)) {
+    return buildDeterministicGroundedReply(ctx)
+  }
+
+  if (looksLikeWrongLanguage(reply)) {
     return buildDeterministicGroundedReply(ctx)
   }
 

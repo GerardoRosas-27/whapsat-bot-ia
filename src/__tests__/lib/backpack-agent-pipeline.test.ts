@@ -141,6 +141,147 @@ describe('runBackpackAgentTurn', () => {
     expect(result.reply).toBe('Sí, tenemos la mochila de sonic en $175.00.')
   })
 
+  it('conserva detalle Naruto del mensaje actual aunque análisis sea genérico', async () => {
+    const requests: Array<{
+      messages?: Array<{ role: string; content: string }>
+      reasoning_effort?: string
+    }> = []
+    global.fetch = jest.fn(async (_url, init) => {
+      const parsed = JSON.parse((init?.body as string) || '{}')
+      requests.push(parsed)
+      return new Response(
+        JSON.stringify({
+          choices: [
+            {
+              message: {
+                content:
+                  requests.length === 1
+                    ? JSON.stringify({
+                        flujo: 'consulta_productos',
+                        descripcion: {
+                          intencion: 'buscar mochila de personaje',
+                          consulta_catalogo: 'mochila naruto personaje escuela',
+                          palabras_clave_actuales: ['naruto', 'personaje'],
+                          palabras_clave_historial: ['mochilas', 'personajes'],
+                          atributos: { personaje: 'naruto', uso: 'escuela' },
+                          detalle_para_busqueda:
+                            'El cliente primero pidió mochilas de personajes y ahora especifica Naruto.'
+                        },
+                        respuesta_directa: ''
+                      })
+                    : 'Sí, tenemos la mochila de naruto en $180.00.'
+              }
+            }
+          ]
+        }),
+        { status: 200, headers: { 'Content-Type': 'application/json' } }
+      )
+    }) as unknown as typeof fetch
+
+    const result = await runBackpackAgentTurnWithMeta({
+      userText: 'De personaje de Naruto',
+      policy: {
+        customerFacts: 'Horario de atención: lunes a viernes de 8 a 5.',
+        flowClassifierSystemPrompt: 'Clasifica productos aunque no tengas catálogo.'
+      },
+      products: [
+        {
+          ...fakeProducts[0],
+          id: 'bitono',
+          name: 'bitono',
+          description: 'mochila escolar sencilla',
+          price: 175,
+          stock: 5
+        },
+        {
+          ...fakeProducts[0],
+          id: 'naruto',
+          name: 'mochila de naruto',
+          description: 'mochila de naruto grande para escuela',
+          price: 180,
+          stock: 2
+        }
+      ],
+      history: [
+        { role: 'user', content: 'Tienes de personajes' },
+        {
+          role: 'assistant',
+          content: '¿Qué tipo de mochila buscas? Puedes darme más detalles: si es para escuela o trabajo, color, personaje, material o tamaño.'
+        }
+      ]
+    })
+
+    const productSystemPrompt = requests[1].messages?.[0]?.content ?? ''
+    expect(global.fetch).toHaveBeenCalledTimes(2)
+    expect(productSystemPrompt).toContain('mochila de naruto')
+    expect(productSystemPrompt).not.toContain('*bitono*')
+    expect(result.reply).toBe('Sí, tenemos la mochila de naruto en $180.00.')
+  })
+
+  it('si el LLM de productos responde en inglés, usa respuesta determinística en español', async () => {
+    const requests: Array<{
+      messages?: Array<{ role: string; content: string }>
+      reasoning_effort?: string
+    }> = []
+    global.fetch = jest.fn(async (_url, init) => {
+      const parsed = JSON.parse((init?.body as string) || '{}')
+      requests.push(parsed)
+      return new Response(
+        JSON.stringify({
+          choices: [
+            {
+              message: {
+                content:
+                  requests.length === 1
+                    ? JSON.stringify({
+                        flujo: 'consulta_productos',
+                        descripcion: {
+                          intencion: 'buscar mochila de personaje',
+                          consulta_catalogo: 'mochila naruto personaje escuela',
+                          palabras_clave_actuales: ['naruto', 'personaje'],
+                          palabras_clave_historial: ['mochilas', 'personajes']
+                        },
+                        respuesta_directa: ''
+                      })
+                    : 'Yes, we have Naruto backpacks available.'
+              }
+            }
+          ]
+        }),
+        { status: 200, headers: { 'Content-Type': 'application/json' } }
+      )
+    }) as unknown as typeof fetch
+
+    const result = await runBackpackAgentTurnWithMeta({
+      userText: 'De personaje de Naruto',
+      policy: {
+        customerFacts: 'Horario de atención: lunes a viernes de 8 a 5.',
+        flowClassifierSystemPrompt: 'Clasifica productos aunque no tengas catálogo.'
+      },
+      products: [
+        {
+          ...fakeProducts[0],
+          id: 'naruto',
+          name: 'mochila de naruto',
+          description: 'mochila de naruto grande para escuela',
+          price: 180,
+          stock: 2
+        }
+      ],
+      history: [
+        { role: 'user', content: 'Tienes de personajes' },
+        {
+          role: 'assistant',
+          content: '¿Qué tipo de mochila buscas? Puedes darme más detalles: si es para escuela o trabajo, color, personaje, material o tamaño.'
+        }
+      ]
+    })
+
+    expect(result.reply).toContain('mochila de naruto')
+    expect(result.reply).not.toContain('Yes')
+    expect(result.reply).not.toContain('backpacks')
+  })
+
   it('pide más detalles con el LLM cuando no encuentra información en la BD', async () => {
     const fetchMock = jest.fn(async () => {
       const content =

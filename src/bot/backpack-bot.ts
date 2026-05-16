@@ -84,7 +84,21 @@ const DEFAULT_FLOW_CLASSIFIER_INPUT_FORMAT = `{
 }`
 const DEFAULT_FLOW_CLASSIFIER_OUTPUT_FORMAT = `{
   "flujo": "consulta_productos",
-  "descripcion": "Resumen sintetizado y procesado por el LLM de lo que quiere el usuario, considerando el mensaje actual y los últimos 5 mensajes del historial. No inventes datos."
+  "descripcion": {
+    "intencion": "buscar mochila de personaje",
+    "consulta_catalogo": "mochila naruto personaje escuela",
+    "palabras_clave_actuales": ["naruto", "personaje"],
+    "palabras_clave_historial": ["mochilas", "personajes"],
+    "atributos": {
+      "personaje": "naruto",
+      "uso": "escuela",
+      "color": "",
+      "material": "",
+      "tamano": ""
+    },
+    "detalle_para_busqueda": "Descripcion detallada para que otro LLM busque en catálogo. No resumir ni borrar palabras clave."
+  },
+  "respuesta_directa": "solo para datos de empresa o fuera_de_alcance; vacío si es consulta_productos"
 }`
 const DEFAULT_SEARCH_LLM_SYSTEM_PROMPT = 'Eres el LLM de búsqueda interno del bot de mochilas. Devuelve únicamente JSON válido usando solo el contexto del flujo.'
 const DEFAULT_SEARCH_LLM_INPUT_FORMAT = '{"mensaje_original":"","flujo":"","descripcion_analisis":"","contexto_recuperado":"","historial_reciente":[]}'
@@ -97,6 +111,7 @@ Conoces mochilas reforzadas de diferentes materiales y telas: mezclilla, lona, p
 También conoces mochilas de personajes populares y actuales para escuela y preescolar: Stitch, Sonic, Mario, Kuromi, Dragon Ball, Goku, Naruto, caricaturas, dibujos y anime.
 También conoces mochilas de marcas deportivas o estilo deportivo como Nike, Adidas y Puma.
 Tu respuesta NO se enviará al cliente. Solo decide qué flujo debe activarse.
+Trabaja siempre en español de México.
 
 Flujos permitidos:
 - consulta_ubicacion: dirección, Google Maps, croquis, cómo llegar.
@@ -106,13 +121,14 @@ Flujos permitidos:
 - fuera_de_alcance: cualquier tema que no sea tienda, mochilas, ubicación, horarios o políticas.
 
 Reglas:
-1. Usa los últimos 5 mensajes para entender referencias como "ese", "la negra", "lo de ayer" o respuestas cortas del usuario.
+1. Usa los últimos 5 mensajes para entender referencias como "ese", "la negra", "lo de ayer" o respuestas cortas del usuario. Da más peso al último mensaje; si el último mensaje especifica personaje, color, material, tamaño o uso, ese detalle manda.
 2. Si el cliente menciona personajes, caricaturas, dibujos, anime, preescolar, kinder, niñas/niños, marcas deportivas o materiales de mochila, clasifica como consulta_productos.
-3. En "descripcion" conserva palabras clave de búsqueda: personaje, personajes, Stitch, Sonic, Mario, Kuromi, Dragon Ball, Goku, Naruto, anime, caricatura, dibujo, preescolar, kinder, Nike, Adidas, Puma, reforzada, reforzado, mezclilla, lona, poliéster, impermeable, candado, laptop, escolar, trabajo, colores, tamaño, uso y género.
-4. Sintetiza, pero no borres atributos importantes. Ejemplos: "Que modelos de personajes tienes?" -> "busca mochilas de personajes"; "Y tienes mochilas reforzada?" -> "busca mochilas reforzadas"; "tienes para preescolar de sonic?" -> "busca mochila preescolar de Sonic".
-5. Si el cliente pregunta algo ambiguo pero parece relacionado con mochilas, usa consulta_productos y pide que la descripcion conserve la duda principal para que el siguiente LLM pueda pedir detalles.
-6. Si no puedes determinar que el cliente pide ubicación, horarios, políticas o productos de mochilas, usa fuera_de_alcance.
-7. No inventes marcas, modelos, precios ni datos que el usuario no haya pedido.`
+3. En "descripcion" NO hagas resumen corto cuando sea consulta_productos. Entrega JSON detallado para otro LLM con consulta_catalogo, palabras_clave_actuales, palabras_clave_historial, atributos y detalle_para_busqueda.
+4. Conserva palabras clave de búsqueda: personaje, personajes, Stitch, Sonic, Mario, Kuromi, Dragon Ball, Goku, Naruto, anime, caricatura, dibujo, preescolar, kinder, Nike, Adidas, Puma, reforzada, reforzado, mezclilla, lona, poliéster, impermeable, candado, laptop, escolar, trabajo, colores, tamaño, uso y género.
+5. Si el mensaje actual es un detalle de una pregunta anterior, combina historial + mensaje actual. Ejemplo: historial "Tienes de personajes" y mensaje actual "De personaje de Naruto" => consulta_catalogo debe incluir "naruto" y "personaje".
+6. Si el cliente pregunta algo ambiguo pero parece relacionado con mochilas, usa consulta_productos y pide que la descripcion conserve la duda principal para que el siguiente LLM pueda pedir detalles.
+7. Si no puedes determinar que el cliente pide ubicación, horarios, políticas o productos de mochilas, usa fuera_de_alcance.
+8. No inventes marcas, modelos, precios ni datos que el usuario no haya pedido.`
 
 class BackpackWhatsAppBot {
   private client: Client
