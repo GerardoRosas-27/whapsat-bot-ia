@@ -1,5 +1,10 @@
-import { fetchBackpackCatalogForLlm, sanitizeLlmReplyForCustomer } from '@/modules/backpack/domain'
+import {
+  fetchBackpackCatalogForLlm,
+  getProductsMentionedByName,
+  sanitizeLlmReplyForCustomer
+} from '@/modules/backpack/domain'
 import { prisma } from '@/lib/prisma'
+import type { BackpackProduct } from '@prisma/client'
 
 describe('sanitizeLlmReplyForCustomer', () => {
   it('elimina monólogo CoT en inglés y deja solo el mensaje en español', () => {
@@ -58,5 +63,36 @@ describe('fetchBackpackCatalogForLlm', () => {
       },
       orderBy: { name: 'asc' }
     })
+  })
+})
+
+describe('getProductsMentionedByName', () => {
+  const products = [
+    {
+      name: 'Mochila Escolar Luna',
+      description: 'Negra escolar'
+    },
+    {
+      name: 'Mochila de Batman',
+      description: 'Personaje para escuela'
+    }
+  ] as BackpackProduct[]
+
+  it('detecta solo modelos exactos mencionados por el LLM', () => {
+    const mentioned = getProductsMentionedByName(
+      'Sí, tenemos *Mochila Escolar Luna* en existencia.',
+      products
+    )
+
+    expect(mentioned.map((p) => p.name)).toEqual(['Mochila Escolar Luna'])
+  })
+
+  it('no infiere modelos solo por descripciones genéricas', () => {
+    const mentioned = getProductsMentionedByName(
+      'Tenemos opciones escolares negras y de personajes.',
+      products
+    )
+
+    expect(mentioned).toEqual([])
   })
 })

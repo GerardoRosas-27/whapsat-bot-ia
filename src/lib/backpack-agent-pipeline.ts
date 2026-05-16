@@ -29,6 +29,21 @@ export type BackpackAgentPolicySlice = {
   interactionWorkflow?: string
 }
 
+export type BackpackAgentTurnInput = {
+  userText: string
+  policy: BackpackAgentPolicySlice
+  products: BackpackProduct[]
+  history: BackpackAgentHistoryTurn[]
+  temperature?: number
+  clarificationAttempts?: number
+}
+
+export type BackpackAgentTurnResult = {
+  reply: string
+  needsClarification: boolean
+  exhaustedClarification: boolean
+}
+
 type AgentScope = 'product' | 'business' | 'mixed' | 'out_of_scope' | 'unknown'
 
 type GroundedAgentContext = {
@@ -49,6 +64,9 @@ const UNKNOWN_BUSINESS_FACT_FALLBACK =
   'No tengo ese dato confirmado. Puedes preguntar por otro dato de la tienda o contactar directo al negocio.'
 const MALFORMED_REPLY_FALLBACK =
   'Disculpa, no pude preparar bien la respuesta. ¿Me escribes de nuevo qué mochila buscas?'
+const FINAL_UNANSWERED_FALLBACK =
+  'Por el momento no podemos atenderle.'
+const MAX_CLARIFICATION_ATTEMPTS = 3
 
 const DEFAULT_AGENT_CONTEXT = `# Rol
 
@@ -694,6 +712,97 @@ function validateGroundedReply(reply: string, ctx: GroundedAgentContext): string
   return reply
 }
 
+function looksLikeUnansweredReply(reply: string): boolean {
+  const t = normalizeText(reply)
+  if (!t) return true
+  const normalizedUnknownProduct = normalizeText(UNKNOWN_PRODUCT_FALLBACK)
+  const normalizedUnknownBusiness = normalizeText(UNKNOWN_BUSINESS_FACT_FALLBACK)
+  if (t === normalizedUnknownProduct || t === normalizedUnknownBusiness) return true
+  return (
+    /\b(no encontre|no encontramos|no tengo confirmado|no tenemos confirmado|no hay informacion|no tengo ese dato|no aparece|no consta|no esta en (?:el )?catalogo|no tenemos ese modelo|no tenemos esa mochila)\b/i.test(
+      t
+    ) ||
+    /\b(no puedo (?:confirmar|responder)|falta informacion|necesito mas informacion)\b/i.test(t)
+  )
+}
+
+async function buildClarifyingQuestion(input: {
+  userText: string
+  ctx: GroundedAgentContext
+  history: BackpackAgentHistoryTurn[]
+  attemptsUsed: number
+}): Promise<BackpackAgentTurnResult> {
+  if (input.attemptsUsed >= MAX_CLARIFICATION_ATTEMPTS) {
+    return {
+      reply: FINAL_UNANSWERED_FALLBACK,
+      needsClarification: false,
+      exhaustedClarification: true
+    }
+  }
+
+  const recentHistory = input.history.slice(-5)
+  const promptContext = formatGroundedContext(input.ctx)
+  const messages: LlmMessage[] = [
+    {
+      role: 'system',
+      content: `Generas UNA pregunta breve para WhatsApp cuando no hay información suficiente en la base de datos.
+Usa el contexto de conversación y los datos recuperados para pedir el detalle más útil.
+No inventes productos, precios, horarios ni políticas.
+No listes modelos por default.
+No expliques que falta información en la base.
+Devuelve únicamente la pregunta final para el cliente, en español de México, máximo 2 líneas.`
+    },
+    ...recentHistory,
+    {
+      role: 'user',
+      content: `Mensaje actual del cliente: ${input.userText}
+
+Contexto disponible desde la BD y Datos de empresa:
+${promptContext}
+
+Formula una pregunta para obtener el detalle faltante y poder buscar mejor.`
+    }
+  ]
+
+  let lastError: unknown
+  for (let attempt = input.attemptsUsed; attempt < MAX_CLARIFICATION_ATTEMPTS; attempt += 1) {
+    try {
+      let question = await backpackLlmChat({
+        messages,
+        temperature: 0.25,
+        maxTokens: 140
+      })
+      question = finalCleanup(sanitizeLlmReplyForCustomer(question))
+      if (
+        question.trim() &&
+        !looksLikeUnansweredReply(question) &&
+        !looksLikeCodeOrInternalOutput(question) &&
+        !looksLikeMetaNarration(question)
+      ) {
+        return {
+          reply: question,
+          needsClarification: true,
+          exhaustedClarification: false
+        }
+      }
+    } catch (error) {
+      lastError = error
+    }
+  }
+
+  if (lastError) {
+    console.warn(
+      '[BackpackAgent] No se pudo generar pregunta de aclaración:',
+      lastError instanceof Error ? lastError.message : lastError
+    )
+  }
+  return {
+    reply: FINAL_UNANSWERED_FALLBACK,
+    needsClarification: false,
+    exhaustedClarification: true
+  }
+}
+
 function formatFallbackProductLine(product: BackpackProduct): string {
   const availability = product.stock > 0 ? 'en existencia' : 'sin existencia'
   return `*${product.name}*: $${Number(product.price).toFixed(2)} — stock:${product.stock} (${availability})`
@@ -707,7 +816,8 @@ function buildDeterministicGroundedReply(ctx: GroundedAgentContext): string {
       threshold: getBackpackTextSimilarityThreshold(),
       limit: productLimit
     }).map((match) => match.product)
-    const products = matches.length > 0 ? matches : ctx.products.slice(0, productLimit)
+    if (matches.length === 0) return UNKNOWN_PRODUCT_FALLBACK
+    const products = matches
     return `Sí, claro, estos son los modelos que manejamos:\n${products
       .map(formatFallbackProductLine)
       .join('\n')}`
@@ -719,13 +829,14 @@ function buildDeterministicGroundedReply(ctx: GroundedAgentContext): string {
 }
 
 /** Un turno del asistente IA (solo texto, sin visión). */
-export async function runBackpackAgentTurn(input: {
-  userText: string
-  policy: BackpackAgentPolicySlice
-  products: BackpackProduct[]
-  history: BackpackAgentHistoryTurn[]
-  temperature?: number
-}): Promise<string> {
+export async function runBackpackAgentTurn(input: BackpackAgentTurnInput): Promise<string> {
+  const result = await runBackpackAgentTurnWithMeta(input)
+  return result.reply
+}
+
+export async function runBackpackAgentTurnWithMeta(
+  input: BackpackAgentTurnInput
+): Promise<BackpackAgentTurnResult> {
   const catalogText = formatCatalogForPrompt(input.products)
   const contextFile = loadBackpackAgentContext()
   const userText =
@@ -736,9 +847,22 @@ export async function runBackpackAgentTurn(input: {
     customerFacts: input.policy.customerFacts,
     products: input.products
   })
+  const clarificationAttempts = Math.max(0, Math.floor(input.clarificationAttempts ?? 0))
 
   if (groundedContext.fallbackReply) {
-    return groundedContext.fallbackReply
+    if (groundedContext.scope === 'out_of_scope') {
+      return {
+        reply: groundedContext.fallbackReply,
+        needsClarification: false,
+        exhaustedClarification: false
+      }
+    }
+    return buildClarifyingQuestion({
+      userText,
+      ctx: groundedContext,
+      history: input.history,
+      attemptsUsed: clarificationAttempts
+    })
   }
 
   const systemPrompt = buildBackpackAgentSystemPrompt({
@@ -773,15 +897,32 @@ export async function runBackpackAgentTurn(input: {
     })
   } catch (error) {
     console.warn(
-      '[BackpackAgent] LLM no devolvió respuesta útil; usando respuesta basada en BD:',
+      '[BackpackAgent] LLM no devolvió respuesta útil; pidiendo más detalles:',
       error instanceof Error ? error.message : error
     )
-    return buildDeterministicGroundedReply(groundedContext)
+    return buildClarifyingQuestion({
+      userText,
+      ctx: groundedContext,
+      history: input.history,
+      attemptsUsed: clarificationAttempts
+    })
   }
   reply = sanitizeLlmReplyForCustomer(reply)
   reply = finalCleanup(reply)
   reply = validateGroundedReply(reply, groundedContext)
-  return reply
+  if (looksLikeUnansweredReply(reply)) {
+    return buildClarifyingQuestion({
+      userText,
+      ctx: groundedContext,
+      history: input.history,
+      attemptsUsed: clarificationAttempts
+    })
+  }
+  return {
+    reply,
+    needsClarification: false,
+    exhaustedClarification: false
+  }
 }
 
 function getBackpackLlmHistoryMessages(): number {

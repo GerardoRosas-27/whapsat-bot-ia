@@ -145,11 +145,29 @@ export function replyMentionsAnyProductName(
   reply: string,
   products: BackpackProduct[]
 ): boolean {
-  const t = reply.toLowerCase()
-  return products.some((p) => {
-    const n = p.name.trim()
-    return n.length >= 3 && t.includes(n.toLowerCase())
+  return getProductsMentionedByName(reply, products).length > 0
+}
+
+export function getProductsMentionedByName<T extends Pick<BackpackProduct, 'name'>>(
+  reply: string,
+  products: T[]
+): T[] {
+  const t = normalizeMentionText(reply)
+  if (!t) return []
+  return products.filter((p) => {
+    const n = normalizeMentionText(p.name)
+    return n.length >= 3 && t.includes(n)
   })
+}
+
+function normalizeMentionText(value: string): string {
+  return value
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toLowerCase()
+    .replace(/[^a-z0-9\s]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
 }
 
 export function buildBackpackSystemPrompt(parts: {

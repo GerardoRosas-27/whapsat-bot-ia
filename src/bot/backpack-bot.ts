@@ -14,11 +14,12 @@ import {
 } from '../lib/backpack-lm-studio'
 import {
   fetchBackpackCatalogForLlm,
+  getProductsMentionedByName,
   pickCatalogReferenceImages
 } from '../lib/backpack-llm-context'
 import { runBackpackLlmTurn, type BackpackLlmHistoryTurn } from '../lib/backpack-llm-pipeline'
 import {
-  runBackpackAgentTurn,
+  runBackpackAgentTurnWithMeta,
   type BackpackAgentHistoryTurn
 } from '../lib/backpack-agent-pipeline'
 import {
@@ -40,6 +41,7 @@ interface BackpackUserSession {
   context?: {
     llmHistory?: BackpackLlmHistoryTurn[]
     agentHistory?: BackpackAgentHistoryTurn[]
+    agentClarificationAttempts?: number
   } & Record<string, unknown>
   createdAt: Date
   updatedAt: Date
@@ -871,7 +873,14 @@ class BackpackWhatsAppBot {
     products: Awaited<ReturnType<typeof prisma.backpackProduct.findMany>>
   ): Promise<void> {
     const productLimit = getBackpackProductMatchLimit()
-    const matched = findSimilarBackpackProducts(reply, products, {
+    const llmMentionedProducts = getProductsMentionedByName(reply, products)
+    if (llmMentionedProducts.length === 0) {
+      console.log(
+        '[BackpackBot] No se envían imágenes: el LLM no mencionó modelos exactos del catálogo.'
+      )
+      return
+    }
+    const matched = findSimilarBackpackProducts(reply, llmMentionedProducts, {
       threshold: getBackpackTextSimilarityThreshold(),
       limit: productLimit
     }).map((match) => match.product)
@@ -924,14 +933,15 @@ class BackpackWhatsAppBot {
     const products = await fetchBackpackCatalogForLlm()
     const session = await this.getSession(phoneNumber)
     const prevHistory = session.context?.agentHistory ?? []
+    const clarificationAttempts = session.context?.agentClarificationAttempts ?? 0
     console.log(
       `[BackpackBot] LLM texto para ${phoneNumber} | productos=${products.length} | modelo=${getLlmModel()} | base=${getLlmBaseUrl()}`
     )
 
-    const reply = await this.withCustomerTyping(message, async () => {
-      let result: string
+    const turn = await this.withCustomerTyping(message, async () => {
+      let result: Awaited<ReturnType<typeof runBackpackAgentTurnWithMeta>>
       try {
-        result = await runBackpackAgentTurn({
+        result = await runBackpackAgentTurnWithMeta({
           userText: body,
           policy: {
             customerFacts: policy.customerFacts,
@@ -940,7 +950,8 @@ class BackpackWhatsAppBot {
           },
           products,
           history: prevHistory,
-          temperature: 0.2
+          temperature: 0.2,
+          clarificationAttempts
         })
       } catch (err) {
         console.error('[BackpackBot] Agente IA no disponible:', err)
@@ -952,7 +963,7 @@ class BackpackWhatsAppBot {
         return null
       }
 
-      if (!result || result.trim().length === 0) {
+      if (!result.reply || result.reply.trim().length === 0) {
         await this.replyToCustomer(
           message,
           '⚠️ No pude preparar una respuesta. Por favor intenta de nuevo.',
@@ -961,27 +972,33 @@ class BackpackWhatsAppBot {
         return null
       }
 
-      if (result.length > BackpackWhatsAppBot.WHATSAPP_REPLY_MAX) {
-        result = result.slice(0, BackpackWhatsAppBot.WHATSAPP_REPLY_MAX - 20) + '\n…'
+      if (result.reply.length > BackpackWhatsAppBot.WHATSAPP_REPLY_MAX) {
+        result.reply = result.reply.slice(0, BackpackWhatsAppBot.WHATSAPP_REPLY_MAX - 20) + '\n…'
       }
 
-      await this.replyToCustomer(message, result, phoneNumber)
-      await this.sendLocationSketchIfNeeded(message, phoneNumber, result, policy)
-      await this.sendMatchedCatalogImages(message, phoneNumber, result, products)
+      await this.replyToCustomer(message, result.reply, phoneNumber)
+      if (!result.needsClarification && !result.exhaustedClarification) {
+        await this.sendLocationSketchIfNeeded(message, phoneNumber, result.reply, policy)
+        await this.sendMatchedCatalogImages(message, phoneNumber, result.reply, products)
+      }
       return result
     })
-    if (!reply) return
+    if (!turn) return
 
     const nextHistory: BackpackAgentHistoryTurn[] = [
       ...prevHistory,
       { role: 'user', content: body.slice(0, 2000) },
-      { role: 'assistant', content: reply.slice(0, 2000) }
+      { role: 'assistant', content: turn.reply.slice(0, 2000) }
     ]
     while (nextHistory.length > 8) {
       nextHistory.shift()
     }
+    const nextClarificationAttempts = turn.needsClarification
+      ? clarificationAttempts + 1
+      : 0
     await this.updateSessionState(phoneNumber, 'agent', {
-      agentHistory: nextHistory
+      agentHistory: nextHistory,
+      agentClarificationAttempts: nextClarificationAttempts
     })
   }
 
