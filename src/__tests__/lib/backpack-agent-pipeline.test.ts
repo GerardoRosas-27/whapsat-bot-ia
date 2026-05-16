@@ -240,4 +240,143 @@ describe('runBackpackAgentTurn', () => {
 
     expect(reply).toBe('Sí, tenemos la mochila escolar de capitan america grande. ¿Te interesa?')
   })
+
+  it('pasa la política de entrega al LLM para que responda al cliente', async () => {
+    let parsed: { messages?: Array<{ role: string; content: string }> } = {}
+    global.fetch = jest.fn(async (_url, init) => {
+      parsed = JSON.parse((init?.body as string) || '{}')
+      return new Response(
+        JSON.stringify({
+          choices: [
+            {
+              message: {
+                content:
+                  'Las entregas se hacen solo en sucursal Centro. Para compras por caja podemos coordinar envío regional.'
+              }
+            }
+          ]
+        }),
+        { status: 200, headers: { 'Content-Type': 'application/json' } }
+      )
+    }) as unknown as typeof fetch
+
+    const reply = await runBackpackAgentTurn({
+      userText: 'Dónde entregas',
+      policy: {
+        customerFacts: [
+          'Información de empresa configurada — Tienda Demo',
+          'Ubicación',
+          '• Sucursal Centro',
+          'Horario de atención',
+          '• Lunes a sábado de 9:00 a 18:00 horas',
+          'Catálogo y existencias',
+          '• Solo manejamos modelos publicados',
+          'Formas de pago',
+          '• Efectivo',
+          'Envíos y entregas',
+          '• Las entregas se hacen solo en sucursal Centro.',
+          '• Para compras por caja podemos coordinar envío regional.'
+        ].join('\n')
+      },
+      products: fakeProducts,
+      history: []
+    })
+
+    const systemPrompt = parsed.messages?.[0]?.content ?? ''
+    expect(systemPrompt).toContain('Información oficial del negocio (Datos de empresa configurados)')
+    expect(systemPrompt).toContain('Las entregas se hacen solo en sucursal Centro')
+    expect(systemPrompt).toContain('Para compras por caja podemos coordinar envío regional')
+    expect(reply).toBe(
+      'Las entregas se hacen solo en sucursal Centro. Para compras por caja podemos coordinar envío regional.'
+    )
+  })
+
+  it('pasa el horario de atención al LLM para que responda apertura y cierre', async () => {
+    let parsed: { messages?: Array<{ role: string; content: string }> } = {}
+    global.fetch = jest.fn(async (_url, init) => {
+      parsed = JSON.parse((init?.body as string) || '{}')
+      return new Response(
+        JSON.stringify({
+          choices: [
+            {
+              message: {
+                content: 'Abrimos de lunes a viernes de 8:15 a 17:45 horas.'
+              }
+            }
+          ]
+        }),
+        { status: 200, headers: { 'Content-Type': 'application/json' } }
+      )
+    }) as unknown as typeof fetch
+
+    const reply = await runBackpackAgentTurn({
+      userText: 'A qué hora abren y cierran?',
+      policy: {
+        customerFacts: [
+          'Información de empresa configurada — Tienda Demo',
+          'Ubicación',
+          '• Sucursal Norte',
+          'Horario de atención',
+          '• De lunes a viernes de 8:15 a 17:45 horas',
+          'Catálogo y existencias',
+          '• Solo manejamos modelos publicados',
+          'Formas de pago',
+          '• Efectivo',
+          'Envíos y entregas',
+          '• No hay entregas fuera de sucursal.'
+        ].join('\n')
+      },
+      products: fakeProducts,
+      history: []
+    })
+
+    const systemPrompt = parsed.messages?.[0]?.content ?? ''
+    expect(systemPrompt).toContain('Información oficial del negocio (Datos de empresa configurados)')
+    expect(systemPrompt).toContain('Horario de atención')
+    expect(systemPrompt).toContain('De lunes a viernes de 8:15 a 17:45 horas')
+    expect(reply).toBe('Abrimos de lunes a viernes de 8:15 a 17:45 horas.')
+  })
+
+  it('usa la política oficial como red de seguridad si el LLM responde con meta texto', async () => {
+    global.fetch = jest.fn(async () =>
+      new Response(
+        JSON.stringify({
+          choices: [
+            {
+              message: {
+                content: 'Informar sobre la política de envío'
+              }
+            }
+          ]
+        }),
+        { status: 200, headers: { 'Content-Type': 'application/json' } }
+      )
+    ) as unknown as typeof fetch
+
+    const reply = await runBackpackAgentTurn({
+      userText: 'Dónde entregas',
+      policy: {
+        customerFacts: [
+          'Información de empresa configurada — Tienda Demo',
+          'Ubicación',
+          '• Sucursal Centro',
+          'Horario de atención',
+          '• Lunes a sábado de 9:00 a 18:00 horas',
+          'Catálogo y existencias',
+          '• Solo manejamos modelos publicados',
+          'Formas de pago',
+          '• Efectivo',
+          'Envíos y entregas',
+          '• Las entregas se hacen solo en sucursal Centro.',
+          '• Para compras por caja podemos coordinar envío regional.'
+        ].join('\n')
+      },
+      products: fakeProducts,
+      history: []
+    })
+
+    expect(reply).toContain('Las entregas se hacen solo en sucursal Centro')
+    expect(reply).toContain('Para compras por caja podemos coordinar envío regional')
+    expect(reply).not.toContain('Informar sobre')
+  })
 })

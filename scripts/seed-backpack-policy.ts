@@ -32,26 +32,6 @@ const RULES_FOR_BOT = `Reglas de comportamiento del asistente
 
 10. Menú: Puedes recordar que escribiendo *hola* obtienen el menú numérico (filtros por género, uso y precio).`
 
-/** Datos que el bot puede repetir al cliente (ubicación, horarios, políticas). */
-const CUSTOMER_FACTS = `Información del local — Mochilas y Novedades Kira
-
-Ubicación
-• Colonia: Cuauhtémoc Norte
-• Dirección: Avenida Benito Juárez #40, Plaza Santa Cruz, local 7
-• Referencia: frente al Neto
-
-Horario de atención
-• De 10:30 a 19:30 horas, todos los días
-
-Catálogo y existencias
-• Solo manejamos los modelos publicados en el catálogo; no hay otros modelos fuera de ese listado.
-
-Envíos
-• Realizamos envíos solo por mayoreo (no por menudeo en envío, salvo que el negocio indique lo contrario por otro canal).
-
-Consultas
-• Para ver opciones por filtros o descripción, el cliente puede escribir *hola* en el chat.`
-
 /** Flujo de trabajo documentado (también en base de datos). */
 const INTERACTION_WORKFLOW = `Flujo de interacción del bot (objetivo: informar disponibilidad según catálogo y datos del local)
 
@@ -71,7 +51,7 @@ const INTERACTION_WORKFLOW = `Flujo de interacción del bot (objetivo: informar 
    - Preguntas del tipo «¿siguen teniendo este modelo?» se resuelven verificando stock del producto en el catálogo.
 
 5. Información del local
-   - Preguntas de dónde están, horario, apertura/cierre o cómo llegar: usa únicamente la información oficial (Cuauhtémoc Norte, Benito Juárez #40, Plaza Santa Cruz local 7, frente al Neto; horario 10:30–19:30 diario).
+   - Preguntas de dónde están, horario, apertura/cierre, entregas, envíos o cómo llegar: usa únicamente los Datos de empresa configurados en la información oficial. No inventes ubicación, días, horarios ni políticas.
 
 6. Cierre de conversación
    - Si no hay match en catálogo, sé claro y ofrece *hola* o describir de otra forma lo que busca.`
@@ -84,17 +64,18 @@ async function main() {
     create: {
       id: POLICY_ID,
       rulesForBot: RULES_FOR_BOT,
-      customerFacts: CUSTOMER_FACTS,
+      customerFacts: '',
       interactionWorkflow: INTERACTION_WORKFLOW
     },
     update: {
       rulesForBot: RULES_FOR_BOT,
-      customerFacts: CUSTOMER_FACTS,
       interactionWorkflow: INTERACTION_WORKFLOW
     }
   })
 
-  console.log('Listo: rulesForBot, customerFacts e interactionWorkflow guardados en BackpackBotPolicy.')
+  console.log(
+    'Listo: rulesForBot e interactionWorkflow actualizados. Los datos de empresa existentes no se sobrescriben.'
+  )
 }
 
 main()

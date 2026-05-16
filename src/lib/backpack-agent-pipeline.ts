@@ -101,6 +101,15 @@ export function buildBackpackAgentSystemPrompt(parts: {
   const facts =
     parts.customerFacts.trim() ||
     '(Sin datos oficiales cargados. Indica que no tienes ese dato y sugiere contactar a la tienda.)'
+  const contextFile =
+    parts.contextFile.trim() ||
+    '(Sin contexto base cargado; cumple las instrucciones de este prompt.)'
+  const rules =
+    parts.rulesForBot?.trim() ||
+    '(No hay reglas internas adicionales configuradas.)'
+  const workflow =
+    parts.interactionWorkflow?.trim() ||
+    '(No hay flujo de interacción adicional configurado.)'
   const compactContext = truncateForPrompt(parts.retrievedContext, 6000)
   return `Respondes WhatsApp de una tienda de mochilas escolares como una persona de mostrador.
 Tu salida debe ser ÚNICAMENTE el mensaje final que se enviará al cliente.
@@ -116,6 +125,8 @@ Confirmar disponibilidad y ofrecer información si es necesario.
 Si piensas eso internamente, NO lo incluyas. Escribe solo la respuesta final, por ejemplo: "Sí, tenemos la mochila de batman grande para escuela."
 Usa solo productos de la base de datos e información del negocio configurada en la base de datos.
 Si preguntan ubicación, dirección o cómo llegar, incluye el enlace de Google Maps si aparece en la información oficial y menciona que enviarás el croquis si está disponible.
+Si preguntan por envíos, entregas, domicilio, mayoreo o venta por unidad, responde con la política completa que aparezca en "Información oficial del negocio"; no la resumas como etiqueta ni omitas restricciones importantes.
+Si preguntan por horario, apertura, cierre o si está abierto, responde usando el horario oficial completo que aparezca en "Información oficial del negocio"; no inventes días ni horas.
 Si piden fotos o imágenes, decide tú cuáles modelos cumplen mejor con las características pedidas usando el catálogo completo. Responde con máximo 3 modelos y escribe sus nombres exactos como aparecen en "Catálogo disponible"; el sistema enviará fotos solo de esos nombres exactos.
 Si preguntan por productos disponibles, responde: "Sí, claro, estos son los modelos que manejamos:" y lista productos por nombre exacto.
 No inventes datos. Sé cordial, directo y natural.
@@ -126,9 +137,19 @@ Respuesta: Hola, ¿qué modelo o tipo de mochila buscas?
 Cliente: ¿Qué mochilas tienen?
 Respuesta: Sí, claro, estos son los modelos que manejamos:
 
-Info negocio: ${truncateForPrompt(facts, 260)}
+Contexto base del agente:
+${truncateForPrompt(contextFile, 3000)}
 
-Catálogo disponible:
+Reglas internas configuradas:
+${truncateForPrompt(rules, 2000)}
+
+Flujo de trabajo configurado:
+${truncateForPrompt(workflow, 2000)}
+
+Información oficial del negocio (Datos de empresa configurados):
+${truncateForPrompt(facts, 4000)}
+
+Contexto recuperado para esta pregunta:
 ${compactContext}`
 }
 
@@ -345,12 +366,82 @@ const BUSINESS_TERMS = [
   'abierto',
   'envio',
   'envios',
+  'entrega',
+  'entregas',
+  'domicilio',
   'mayoreo',
+  'menudeo',
+  'unidad',
   'pago',
   'pagos',
   'contacto',
   'telefono',
   'tienda'
+]
+
+const DELIVERY_QUESTION_TERMS = [
+  'envio',
+  'envios',
+  'entrega',
+  'entregas',
+  'domicilio',
+  'reparto',
+  'mandan',
+  'mandas',
+  'enviar',
+  'envian',
+  'envias'
+]
+
+const DELIVERY_FACT_TERMS = [
+  'envio',
+  'envios',
+  'entrega',
+  'entregas',
+  'domicilio',
+  'reparto',
+  'mayoreo',
+  'menudeo',
+  'unidad',
+  'local'
+]
+
+const SCHEDULE_QUESTION_TERMS = [
+  'horario',
+  'hora',
+  'abren',
+  'abres',
+  'abrir',
+  'apertura',
+  'cierran',
+  'cierras',
+  'cerrar',
+  'cierre',
+  'abierto',
+  'abierta',
+  'cerrado',
+  'cerrada'
+]
+
+const SCHEDULE_FACT_TERMS = [
+  'horario',
+  'hora',
+  'horas',
+  'atencion',
+  'abren',
+  'apertura',
+  'cierran',
+  'cierre',
+  'abierto',
+  'cerrado',
+  'todos los dias',
+  'lunes',
+  'martes',
+  'miercoles',
+  'jueves',
+  'viernes',
+  'sabado',
+  'domingo'
 ]
 
 const OUT_OF_SCOPE_TERMS = [
@@ -387,6 +478,14 @@ function hasAnyTerm(normalizedText: string, terms: string[]): boolean {
   return terms.some((term) => normalizedText.includes(term))
 }
 
+function isDeliveryQuestion(normalizedText: string): boolean {
+  return hasAnyTerm(normalizedText, DELIVERY_QUESTION_TERMS)
+}
+
+function isScheduleQuestion(normalizedText: string): boolean {
+  return hasAnyTerm(normalizedText, SCHEDULE_QUESTION_TERMS)
+}
+
 function inferScope(userText: string): AgentScope {
   const normalized = normalizeText(userText)
   const productIntent = hasAnyTerm(normalized, PRODUCT_TERMS)
@@ -417,6 +516,22 @@ function selectRelevantBusinessFacts(userText: string, customerFacts: string): s
     .split('\n')
     .map((line) => line.trim())
     .filter(Boolean)
+
+  if (isDeliveryQuestion(normalizedUser)) {
+    const deliveryLines = lines.filter((line) => {
+      const normalizedLine = normalizeText(line)
+      return hasAnyTerm(normalizedLine, DELIVERY_FACT_TERMS)
+    })
+    if (deliveryLines.length > 0) return deliveryLines.join('\n')
+  }
+
+  if (isScheduleQuestion(normalizedUser)) {
+    const scheduleLines = lines.filter((line) => {
+      const normalizedLine = normalizeText(line)
+      return hasAnyTerm(normalizedLine, SCHEDULE_FACT_TERMS)
+    })
+    if (scheduleLines.length > 0) return scheduleLines.join('\n')
+  }
 
   if (lines.length <= 12) return facts
 
@@ -533,7 +648,7 @@ function looksLikeMetaNarration(reply: string): boolean {
     /\b(el usuario|la usuaria|el cliente|la clienta)\s+est[aá]\s+(preguntando|solicitando|buscando|pidiendo)/i.test(
       reply
     ) ||
-    /\b(como vendedor|como asistente|debo responder|debo ser|mi objetivo|plan:|razonamiento|información disponible:|cordial,\s*direct[ao]|siguiendo la regla|revisando el cat[aá]logo|respuesta a generar|cat[aá]logo disponible|confirmar disponibilidad|ofrecer informaci[oó]n)/i.test(
+    /\b(como vendedor|como asistente|debo responder|debo ser|mi objetivo|plan:|razonamiento|información disponible:|cordial,\s*direct[ao]|siguiendo la regla|revisando el cat[aá]logo|respuesta a generar|cat[aá]logo disponible|confirmar disponibilidad|ofrecer informaci[oó]n|informar sobre|informar al cliente|informar que)/i.test(
       reply
     )
   )
